@@ -7,8 +7,8 @@ const OEE_SHEET_NAME = "OEE_Registro";
 const PERSONAL_SHEET_NAME = "Log_Personal";
 const FOLDER_NAME = "Evidencias MTTO Nidec";
 const ADMIN_PASS = "1451MR";
-const CORREO_COMPRAS = "jose.h.ramirez@nidec-ga.com, luis.barrita@nidec-ga.com, genaro.deleon@nidec-ga.com, sara.o.rodriguez@nidec-ga.com, margarita.b.barboza@nidec-ga.com, jose.s.sanchez@nidec-ga.com, wenceslao.pacheco@nidec-ga.com, noe.martinez@nidec-ga.com";
 const URL_API_SHEETS = "https://script.google.com/a/macros/nidec-ga.com/s/AKfycbwPdHrj_clPsHwWrfxWhlUC2pKXqsUIi8Z6zm_p-p1m0KPs33kef7DG8R2KiVY9TJST/exec";
+const CORREO_COMPRAS = "jose.h.ramirez@nidec-ga.com, luis.barrita@nidec-ga.com, genaro.deleon@nidec-ga.com, sara.o.rodriguez@nidec-ga.com, margarita.b.barboza@nidec-ga.com, jose.s.sanchez@nidec-ga.com, wenceslao.pacheco@nidec-ga.com, noe.martinez@nidec-ga.com";
 
 function getDB() {
   try { return SpreadsheetApp.openById('1--AsNXslAhbu3PxAldhAtAMIA2a5LZRBvrtbmFLOZc0'); } 
