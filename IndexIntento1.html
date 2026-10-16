@@ -1,59 +1,35 @@
 <!DOCTYPE html>
 <html lang="es">
-<head>
-  <base target="_top">
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WORKPULSE AI Manufacturing Management System Powered by Google Cloud</title>
+<script>
+  // Tu URL oficial de la API de Google Apps Script limpia
+  const URL_API_SHEETS = "https://script.google.com/a/macros/nidec-ga.com/s/AKfycbwPdHrj_clPsHwWrfxWhlUC2pKXqsUIi8Z6zm_p-p1m0KPs33kef7DG8R2KiVY9TJST/exec";
 
-  <!-- 1. INTENTO DE FAVICON ESTÁTICO -->
-  <link id="favicon" rel="icon" type="image/png" href="https://www.nidec.com/files/user/www-nidec-com/corporate/about/slogan/img/img_slogan_01.png">
+  function sincronizarTableroNidec() {
+    fetch(URL_API_SHEETS)
+      .then(response => response.json())
+      .then(data => {
+        console.log("Datos sincronizados con éxito:", data);
 
-  <!-- 2. FORZAR CAMBIO DE FAVICON POR JAVASCRIPT EN TIEMPO REAL -->
-  <script>
-    (function() {
-      var link = document.querySelector("link[rel*='icon']") || document.createElement('link');
-      link.type = 'image/png';
-      link.rel = 'shortcut icon';
-      link.href = 'https://www.nidec.com/files/user/www-nidec-com/corporate/about/slogan/img/img_slogan_01.png';
-      document.getElementsByTagName('head')[0].appendChild(link);
-    })();
-  </script>
-    <!-- INTERCEPTOR GLOBAL DE ALERTAS DE GOOGLE (VERSIÓN CENTRADA Y GRANDE) -->
-    <script>
-        window.alert = function(mensaje) {
-            let toastAnterior = document.getElementById('wp-toast-msg');
-            if (toastAnterior) toastAnterior.remove();
+        // Actualiza los elementos de tu HTML con los datos reales del JSON
+        // (Asegúrate de que tus elementos tengan estos IDs en tu cuerpo HTML, o ajústalos según los nombres que uses)
+        if (document.getElementById('meta-turno')) document.getElementById('meta-turno').innerText = data.meta;
+        if (document.getElementById('prod-real')) document.getElementById('prod-real').innerText = data.produccionReal;
+        
+        // Ejemplo para calcular el total de paros sumando las categorías
+        let totalParos = (data.hombre || 0) + (data.maquina || 0) + (data.material || 0) + (data.metodo || 0) + (data.calidad || 0) + (data.otros || 0);
+        if (document.getElementById('total-paros')) document.getElementById('total-paros').innerText = totalParos + " min";
+        
+        if (document.getElementById('fallas-criticas')) document.getElementById('fallas-criticas').innerText = data.falla;
+      })
+      .catch(error => console.error("Error al conectar con la API de Google:", error));
+  }
 
-            let toast = document.createElement('div');
-            toast.id = 'wp-toast-msg';
-            
-            let esError = mensaje.toLowerCase().includes('completa') || mensaje.toLowerCase().includes('falta') || mensaje.toLowerCase().includes('error');
-            let colorBg = esError ? '#dc2626' : '#009B4A';
-            let icono = esError ? '⚠️' : '✅';
-            let globalCerrados = [];
-            let globalEHS = [];
-
-            toast.style.cssText = 'position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:' + colorBg + '; color:#ffffff; padding:25px 45px; border-radius:16px; font-weight:900; font-size:20px; z-index:999999; box-shadow:0 15px 40px rgba(0,0,0,0.5); font-family:"Segoe UI", Arial, sans-serif; border:4px solid #ffffff; display:flex; align-items:center; justify-content:center; gap:15px; text-align:center; max-width:85%; min-width:340px; transition: opacity 0.3s ease; text-transform:uppercase; letter-spacing:0.5px;';
-            toast.innerHTML = '<span style="font-size:34px;">' + icono + '</span> <span>' + mensaje + '</span>';
-
-            let agregarAlBody = function() {
-                if (document.body) {
-                    document.body.appendChild(toast);
-                    setTimeout(function() {
-                        toast.style.opacity = '0';
-                        setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
-                    }, 3000);
-                }
-            };
-
-            if (document.readyState === 'loading') {
-                window.addEventListener('DOMContentLoaded', agregarAlBody);
-            } else {
-                agregarAlBody();
-            }
-        };
-    </script>
+  // Ejecutar al cargar la página y refrescar automáticamente cada 10 segundos
+  document.addEventListener("DOMContentLoaded", function() {
+    sincronizarTableroNidec();
+    setInterval(sincronizarTableroNidec, 10000);
+  });
+</script>
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <!-- LIBRERÍAS PARA CÓDIGO DE BARRAS Y CAPTURA DE PANTALLA -->
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
