@@ -4005,60 +4005,73 @@ function obtenerDatosCentroComando() {
                       fManana.getDate().toString().padStart(2,'0') + "/" + (fManana.getMonth()+1).toString().padStart(2,'0') + "/" + fManana.getFullYear();
 
 // =========================================================================
-    // SINCRONIZACIÓN AUTOMÁTICA CON FIREBASE FIRESTORE
-    // =========================================================================
-    try {
-      if (typeof sincronizarConFirebase === "function") {
-        sincronizarConFirebase("resumen_ejecutivo", "ultimo_calculo", res);
-      }
-    } catch (errSync) {
-      Logger.log("Error al sincronizar con Firebase: " + errSync.toString());
-    }
-
-    return { success: true, data: res };
-  } catch(e) {
-    return { success: false, error: e.toString() };
-  }
-}
-
+// SCRIPT COMPLETO PARA GITHUB PAGES (script.js)
+// Lectura directa desde Firebase Firestore (Evita errores de CORS)
 // =========================================================================
-// FUNCIÓN AUXILIAR PARA ENVIAR DATOS A FIREBASE FIRESTORE
-// =========================================================================
-function sincronizarConFirebase(coleccion, docId, data) {
-  var firebaseProjectId = "erp-mantenimiento-v3";
-  var firestoreUrl = "https://firestore.googleapis.com/v1/projects/" + firebaseProjectId + "/databases/(default)/documents/" + coleccion + "/" + docId;
-  
-  var fields = {};
-  
-  for (var key in data) {
-    if (data.hasOwnProperty(key)) {
-      var valor = data[key];
-      
-      if (typeof valor === 'object' && valor !== null) {
-        // Serializa sub-objetos y arreglos (como 'turno', 'criticas', 'dt6M') a texto JSON limpio
-        fields[key] = { stringValue: JSON.stringify(valor) };
-      } else if (typeof valor === 'boolean') {
-        fields[key] = { booleanValue: valor };
-      } else if (typeof valor === 'number') {
-        fields[key] = { doubleValue: valor };
-      } else {
-        fields[key] = { stringValue: String(valor !== undefined && valor !== null ? valor : "") };
-      }
-    }
-  }
+import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-firestore.js";
 
-  var options = {
-    method: "patch",
-    contentType: "application/json",
-    payload: JSON.stringify({ fields: fields }),
-    muteHttpExceptions: true
-  };
-
+async function sincronizarTableroNidec() {
   try {
-    var response = UrlFetchApp.fetch(firestoreUrl, options);
-    Logger.log("Código HTTP Firebase: " + response.getResponseCode());
-    Logger.log("Respuesta Firebase: " + response.getContentText());
-  } catch (err) {
-    Logger.log("Error crítico en UrlFetchApp: " + err.toString());
+    // Apuntamos exactamente al documento donde Google Apps Script guarda la información
+    const docRef = doc(db, "resumen_ejecutivo", "ultimo_calculo");
+    const docSnap = await getDoc(docRef);
+
+    if (docSnap.exists()) {
+      const data = docSnap.data();
+      console.log("Datos obtenidos de Firebase exitosamente:", data);
+
+      // Deserializamos objetos y arreglos si vienen convertidos en texto JSON
+      const turno = typeof data.turno === "string" ? JSON.parse(data.turno) : (data.turno || {});
+      const criticas = typeof data.criticas === "string" ? JSON.parse(data.criticas) : (data.criticas || []);
+      const dt6M = typeof data.dt6M === "string" ? JSON.parse(data.dt6M) : (data.dt6M || {});
+
+      // -------------------------------------------------------------------
+      // 1. Rendimiento / Performance Global (Turno)
+      // -------------------------------------------------------------------
+      if (turno.perfPct !== undefined) {
+        const elPerf = document.getElementById("perf-global");
+        if (elPerf) elPerf.innerText = turno.perfPct + "%";
+      }
+
+      // -------------------------------------------------------------------
+      // 2. Avance vs Meta (Turno)
+      // -------------------------------------------------------------------
+      const elReal = document.getElementById("prod-real");
+      const elMeta = document.getElementById("prod-meta");
+      if (elReal) elReal.innerText = turno.real !== undefined ? turno.real : 0;
+      if (elMeta) elMeta.innerText = turno.meta !== undefined ? turno.meta : 0;
+
+      // -------------------------------------------------------------------
+      // 3. Fallas Críticas que Afectan Producción
+      // -------------------------------------------------------------------
+      const contenedorFallas = document.getElementById("lista-fallas-criticas");
+      if (contenedorFallas) {
+        if (Array.isArray(criticas) && criticas.length > 0) {
+          contenedorFallas.innerHTML = criticas.map(f => `
+            <div class="falla-card" style="padding: 8px; margin-bottom: 6px; border-left: 4px solid #e74c3c; background: #fdf2e9;">
+              <strong>${f.linea || "Línea N/A"}:</strong> ${f.dtMins || 0} min — ${f.falla || "Sin descripción"}
+            </div>
+          `).join("");
+        } else {
+          contenedorFallas.innerHTML = "<p style='color: #27ae60; font-weight: bold;'>Sin fallas críticas reportadas</p>";
+        }
+      }
+
+      // -------------------------------------------------------------------
+      // 4. Distribución Downtime (6M)
+      // -------------------------------------------------------------------
+      if (dt6M.totalMin !== undefined) {
+        const elTotalParo = document.getElementById("total-paro-min");
+        if (elTotalParo) elTotalParo.innerText = dt6M.totalMin + " min";
+      }
+
+    } else {
+      console.warn("No se encontró el documento 'ultimo_calculo' en la colección 'resumen_ejecutivo'.");
+    }
+  } catch (error) {
+    console.error("Error al sincronizar con Firebase Firestore:", error);
   }
 }
+
+// Ejecuta automáticamente la sincronización al cargar el DOM de la página
+document.addEventListener("DOMContentLoaded", sincronizarTableroNidec);
