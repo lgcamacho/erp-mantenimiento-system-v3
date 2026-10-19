@@ -4004,7 +4004,7 @@ function obtenerDatosCentroComando() {
     res.fechaTitulo = hoy.getDate().toString().padStart(2,'0') + "/" + (hoy.getMonth()+1).toString().padStart(2,'0') + "/" + hoy.getFullYear() + " - " + 
                       fManana.getDate().toString().padStart(2,'0') + "/" + (fManana.getMonth()+1).toString().padStart(2,'0') + "/" + fManana.getFullYear();
 
-    // =========================================================================
+// =========================================================================
     // SINCRONIZACIÓN AUTOMÁTICA CON FIREBASE FIRESTORE
     // =========================================================================
     try {
@@ -4022,26 +4022,28 @@ function obtenerDatosCentroComando() {
 }
 
 // =========================================================================
-// FUNCIÓN AUXILIAR ROBUSTA PARA ENVIAR DATOS A FIREBASE FIRESTORE
+// FUNCIÓN AUXILIAR PARA ENVIAR DATOS A FIREBASE FIRESTORE
 // =========================================================================
 function sincronizarConFirebase(coleccion, docId, data) {
   var firebaseProjectId = "erp-mantenimiento-v3";
   var firestoreUrl = "https://firestore.googleapis.com/v1/projects/" + firebaseProjectId + "/databases/(default)/documents/" + coleccion + "/" + docId;
   
   var fields = {};
+  
   for (var key in data) {
     if (data.hasOwnProperty(key)) {
       var valor = data[key];
       
       if (typeof valor === 'object' && valor !== null) {
-        valor = JSON.stringify(valor);
-      } else if (valor === undefined || valor === null) {
-        valor = "";
+        // Serializa sub-objetos y arreglos (como 'turno', 'criticas', 'dt6M') a texto JSON limpio
+        fields[key] = { stringValue: JSON.stringify(valor) };
+      } else if (typeof valor === 'boolean') {
+        fields[key] = { booleanValue: valor };
+      } else if (typeof valor === 'number') {
+        fields[key] = { doubleValue: valor };
       } else {
-        valor = String(valor);
+        fields[key] = { stringValue: String(valor !== undefined && valor !== null ? valor : "") };
       }
-      
-      fields[key] = { stringValue: valor };
     }
   }
 
