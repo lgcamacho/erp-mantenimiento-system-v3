@@ -3932,7 +3932,7 @@ function obtenerDatosCentroComando() {
       }
     }
 
-    // 🎯 6. RESUMEN EJECUTIVO (KPIs 5 A 8)
+// 🎯 6. RESUMEN EJECUTIVO (KPIs 5 A 8)
     try {
       if (typeof obtenerResumenEjecutivoDirecto === "function") {
         let resEjecutivo = obtenerResumenEjecutivoDirecto();
@@ -3989,7 +3989,10 @@ function obtenerDatosCentroComando() {
               : 0;
           });
 
-listaLineasConParo.sort(function(a, b) { return b.dtMins - a.dtMins; });
+          listaLineasConParo.sort(function(a, b) { 
+            return b.dtMins - a.dtMins; 
+          });
+          
           res.turno.criticas = listaLineasConParo;
         }
       }
@@ -4005,7 +4008,9 @@ listaLineasConParo.sort(function(a, b) { return b.dtMins - a.dtMins; });
     // SINCRONIZACIÓN AUTOMÁTICA CON FIREBASE FIRESTORE
     // =========================================================================
     try {
-      sincronizarConFirebase("resumen_ejecutivo", "ultimo_calculo", res);
+      if (typeof sincronizarConFirebase === "function") {
+        sincronizarConFirebase("resumen_ejecutivo", "ultimo_calculo", res);
+      }
     } catch (errSync) {
       Logger.log("Error al sincronizar con Firebase: " + errSync.toString());
     }
@@ -4017,17 +4022,26 @@ listaLineasConParo.sort(function(a, b) { return b.dtMins - a.dtMins; });
 }
 
 // =========================================================================
-// FUNCIÓN AUXILIAR PARA ENVIAR DATOS A FIREBASE DESDE GOOGLE APPS SCRIPT
+// FUNCIÓN AUXILIAR ROBUSTA PARA ENVIAR DATOS A FIREBASE FIRESTORE
 // =========================================================================
 function sincronizarConFirebase(coleccion, docId, data) {
   var firebaseProjectId = "erp-mantenimiento-v3";
   var firestoreUrl = "https://firestore.googleapis.com/v1/projects/" + firebaseProjectId + "/databases/(default)/documents/" + coleccion + "/" + docId;
   
-  // Convertir objeto simple de Apps Script a formato de documentos REST de Firestore
   var fields = {};
   for (var key in data) {
     if (data.hasOwnProperty(key)) {
-      fields[key] = { stringValue: JSON.stringify(data[key]) };
+      var valor = data[key];
+      
+      if (typeof valor === 'object' && valor !== null) {
+        valor = JSON.stringify(valor);
+      } else if (valor === undefined || valor === null) {
+        valor = "";
+      } else {
+        valor = String(valor);
+      }
+      
+      fields[key] = { stringValue: valor };
     }
   }
 
@@ -4038,5 +4052,11 @@ function sincronizarConFirebase(coleccion, docId, data) {
     muteHttpExceptions: true
   };
 
-  UrlFetchApp.fetch(firestoreUrl, options);
+  try {
+    var response = UrlFetchApp.fetch(firestoreUrl, options);
+    Logger.log("Código HTTP Firebase: " + response.getResponseCode());
+    Logger.log("Respuesta Firebase: " + response.getContentText());
+  } catch (err) {
+    Logger.log("Error crítico en UrlFetchApp: " + err.toString());
+  }
 }
