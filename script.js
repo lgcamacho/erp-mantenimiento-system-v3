@@ -3989,7 +3989,7 @@ function obtenerDatosCentroComando() {
               : 0;
           });
 
-          listaLineasConParo.sort(function(a, b) { return b.dtMins - a.dtMins; });
+listaLineasConParo.sort(function(a, b) { return b.dtMins - a.dtMins; });
           res.turno.criticas = listaLineasConParo;
         }
       }
@@ -4001,8 +4001,42 @@ function obtenerDatosCentroComando() {
     res.fechaTitulo = hoy.getDate().toString().padStart(2,'0') + "/" + (hoy.getMonth()+1).toString().padStart(2,'0') + "/" + hoy.getFullYear() + " - " + 
                       fManana.getDate().toString().padStart(2,'0') + "/" + (fManana.getMonth()+1).toString().padStart(2,'0') + "/" + fManana.getFullYear();
 
+    // =========================================================================
+    // SINCRONIZACIÓN AUTOMÁTICA CON FIREBASE FIRESTORE
+    // =========================================================================
+    try {
+      sincronizarConFirebase("resumen_ejecutivo", "ultimo_calculo", res);
+    } catch (errSync) {
+      Logger.log("Error al sincronizar con Firebase: " + errSync.toString());
+    }
+
     return { success: true, data: res };
   } catch(e) {
     return { success: false, error: e.toString() };
   }
+}
+
+// =========================================================================
+// FUNCIÓN AUXILIAR PARA ENVIAR DATOS A FIREBASE DESDE GOOGLE APPS SCRIPT
+// =========================================================================
+function sincronizarConFirebase(coleccion, docId, data) {
+  var firebaseProjectId = "erp-mantenimiento-v3";
+  var firestoreUrl = "https://firestore.googleapis.com/v1/projects/" + firebaseProjectId + "/databases/(default)/documents/" + coleccion + "/" + docId;
+  
+  // Convertir objeto simple de Apps Script a formato de documentos REST de Firestore
+  var fields = {};
+  for (var key in data) {
+    if (data.hasOwnProperty(key)) {
+      fields[key] = { stringValue: JSON.stringify(data[key]) };
+    }
+  }
+
+  var options = {
+    method: "patch",
+    contentType: "application/json",
+    payload: JSON.stringify({ fields: fields }),
+    muteHttpExceptions: true
+  };
+
+  UrlFetchApp.fetch(firestoreUrl, options);
 }
