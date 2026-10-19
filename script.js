@@ -4012,9 +4012,15 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-
 
 async function sincronizarTableroNidec() {
   try {
+    // Ocultar/Mostrar el loader (engrane) si existe en la página
+    const loader = document.getElementById('loading-overlay');
+    if (loader) loader.style.display = 'block';
+
     // Apuntamos exactamente al documento donde Google Apps Script guarda la información
     const docRef = doc(db, "resumen_ejecutivo", "ultimo_calculo");
     const docSnap = await getDoc(docRef);
+
+    if (loader) loader.style.display = 'none';
 
     if (docSnap.exists()) {
       const data = docSnap.data();
@@ -4025,21 +4031,24 @@ async function sincronizarTableroNidec() {
       const criticas = typeof data.criticas === "string" ? JSON.parse(data.criticas) : (data.criticas || []);
       const dt6M = typeof data.dt6M === "string" ? JSON.parse(data.dt6M) : (data.dt6M || {});
 
+      // Helper para asignar texto de forma segura en el DOM
+      const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.innerText = val;
+      };
+
       // -------------------------------------------------------------------
       // 1. Rendimiento / Performance Global (Turno)
       // -------------------------------------------------------------------
       if (turno.perfPct !== undefined) {
-        const elPerf = document.getElementById("perf-global");
-        if (elPerf) elPerf.innerText = turno.perfPct + "%";
+        setVal("perf-global", turno.perfPct + "%");
       }
 
       // -------------------------------------------------------------------
       // 2. Avance vs Meta (Turno)
       // -------------------------------------------------------------------
-      const elReal = document.getElementById("prod-real");
-      const elMeta = document.getElementById("prod-meta");
-      if (elReal) elReal.innerText = turno.real !== undefined ? turno.real : 0;
-      if (elMeta) elMeta.innerText = turno.meta !== undefined ? turno.meta : 0;
+      setVal("prod-real", turno.real !== undefined ? turno.real : 0);
+      setVal("prod-meta", turno.meta !== undefined ? turno.meta : 0);
 
       // -------------------------------------------------------------------
       // 3. Fallas Críticas que Afectan Producción
@@ -4061,8 +4070,66 @@ async function sincronizarTableroNidec() {
       // 4. Distribución Downtime (6M)
       // -------------------------------------------------------------------
       if (dt6M.totalMin !== undefined) {
-        const elTotalParo = document.getElementById("total-paro-min");
-        if (elTotalParo) elTotalParo.innerText = dt6M.totalMin + " min";
+        setVal("total-paro-min", dt6M.totalMin + " min");
+      }
+
+      // -------------------------------------------------------------------
+      // 5. Indicadores Secundarios (Mantenimiento, EHS, Refacciones)
+      // -------------------------------------------------------------------
+      const programados = Number(data.programados) || 0;
+      const realizados = Number(data.realizados) || 0;
+      const ehsAbiertos = Number(data.ehsAbiertos) || 0;
+      const ehsValidados = Number(data.ehsValidados) || 0;
+      const refSolicitadas = Number(data.refSolicitadas) || 0;
+      const refEntregadas = Number(data.refEntregadas) || 0;
+
+      setVal('d-prog', programados);
+      setVal('d-real', realizados);
+      setVal('d-ehs-a', ehsAbiertos);
+      setVal('d-ehs-v', ehsValidados);
+      setVal('d-ref-s', refSolicitadas);
+      setVal('d-ref-e', refEntregadas);
+
+      // -------------------------------------------------------------------
+      // 6. Actualización de Gráficas (ApexCharts)
+      // -------------------------------------------------------------------
+      let totalMtto = programados + realizados;
+      let pMtto = totalMtto > 0 ? (realizados * 100) / totalMtto : 0;
+      if (typeof chartMtto !== 'undefined' && chartMtto) {
+        chartMtto.updateSeries([parseFloat(pMtto.toFixed(1))]);
+      }
+
+      let totalEHS = ehsAbiertos + ehsValidados;
+      let pEHS = totalEHS > 0 ? (ehsValidados * 100) / totalEHS : 0;
+      if (typeof chartEHS !== 'undefined' && chartEHS) {
+        chartEHS.updateSeries([parseFloat(pEHS.toFixed(1))]);
+      }
+
+      let pRef = refSolicitadas > 0 ? (refEntregadas * 100) / refSolicitadas : 0;
+      if (typeof chartRef !== 'undefined' && chartRef) {
+        chartRef.updateSeries([parseFloat(pRef.toFixed(1))]);
+      }
+
+      // Tendencias
+      if (typeof chartTrendMtto !== 'undefined' && chartTrendMtto && data.trendMtto) {
+        chartTrendMtto.updateOptions({
+          xaxis: { categories: data.trendMtto.categories },
+          series: [ { name: 'ABIERTO', data: data.trendMtto.abiertos }, { name: 'CERRADO', data: data.trendMtto.cerrados } ]
+        }, true, true);
+      }
+
+      if (typeof chartTrendEHS !== 'undefined' && chartTrendEHS && data.trendEHS) {
+        chartTrendEHS.updateOptions({
+          xaxis: { categories: data.trendEHS.categories },
+          series: [ { name: 'PENDIENTE', data: data.trendEHS.abiertos }, { name: 'VALIDADO', data: data.trendEHS.cerrados } ]
+        }, true, true);
+      }
+
+      if (typeof chartTrendRef !== 'undefined' && chartTrendRef && data.trendRef) {
+        chartTrendRef.updateOptions({
+          xaxis: { categories: data.trendRef.categories },
+          series: [ { name: 'SOLICITUDES', data: data.trendRef.abiertos }, { name: 'ENTREGADAS', data: data.trendRef.cerrados } ]
+        }, true, true);
       }
 
     } else {
@@ -4070,8 +4137,18 @@ async function sincronizarTableroNidec() {
     }
   } catch (error) {
     console.error("Error al sincronizar con Firebase Firestore:", error);
+    const loader = document.getElementById('loading-overlay');
+    if (loader) loader.style.display = 'none';
+  }
+
+  // Ejecutar Centro de Comando si la función existe
+  if (typeof cargarDatosCentroComando === 'function') {
+    cargarDatosCentroComando();
   }
 }
 
-// Ejecuta automáticamente la sincronización al cargar el DOM de la página
+// Aliases para mantener compatibilidad con llamadas existentes a refresh()
+window.refresh = sincronizarTableroNidec;
+
+// Ejecutar sincronización al cargar el DOM
 document.addEventListener("DOMContentLoaded", sincronizarTableroNidec);
