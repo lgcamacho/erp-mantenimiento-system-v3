@@ -3229,58 +3229,99 @@ function updateClock() {
           
         });
 
-        function refresh() {
-            google.script.run
-                .withSuccessHandler(function(d) {
-                    // OCULTA EL ENGRANE AUTOMÁTICAMENTE AL RECIBIR DATOS
-                    var loader = document.getElementById('loading-overlay');
-                    if (loader) loader.style.display = 'none';
+import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-firestore.js";
 
-                    if(!d || d.errorServer) return;
-                    try {
-                        document.getElementById('d-prog').innerText = Number(d.programados) || 0; 
-                        document.getElementById('d-real').innerText = Number(d.realizados) || 0;
-                        document.getElementById('d-ehs-a').innerText = Number(d.ehsAbiertos) || 0; 
-                        document.getElementById('d-ehs-v').innerText = Number(d.ehsValidados) || 0;
-                        document.getElementById('d-ref-s').innerText = Number(d.refSolicitadas) || 0; 
-                        document.getElementById('d-ref-e').innerText = Number(d.refEntregadas) || 0;
-                        
-                        let totalMtto = (Number(d.programados) || 0) + (Number(d.realizados) || 0); 
-                        let pMtto = totalMtto > 0 ? ((Number(d.realizados) || 0) * 100) / totalMtto : 0;
-                        if(chartMtto) chartMtto.updateSeries([parseFloat(pMtto.toFixed(1))]);
-                        
-                        let totalEHS = (Number(d.ehsAbiertos) || 0) + (Number(d.ehsValidados) || 0); 
-                        let pEHS = totalEHS > 0 ? ((Number(d.ehsValidados) || 0) * 100) / totalEHS : 0;
-                        if(chartEHS) chartEHS.updateSeries([parseFloat(pEHS.toFixed(1))]);
-                        
-                        let pRef = (Number(d.refSolicitadas) || 0) > 0 ? ((Number(d.refEntregadas) || 0) * 100) / (Number(d.refSolicitadas) || 0) : 0;
-                        if(chartRef) chartRef.updateSeries([parseFloat(pRef.toFixed(1))]);
+async function refresh() {
+    try {
+        // Ocultar/Mostrar el loader (engrane)
+        var loader = document.getElementById('loading-overlay');
+        if (loader) loader.style.display = 'block';
 
-                        if (chartTrendMtto && d.trendMtto) { 
-                            chartTrendMtto.updateOptions({ 
-                                xaxis: { categories: d.trendMtto.categories },
-                                series: [ { name: 'ABIERTO', data: d.trendMtto.abiertos }, { name: 'CERRADO', data: d.trendMtto.cerrados } ]
-                            }, true, true);
-                        }
-                        if (chartTrendEHS && d.trendEHS) { 
-                            chartTrendEHS.updateOptions({ 
-                                xaxis: { categories: d.trendEHS.categories },
-                                series: [ { name: 'PENDIENTE', data: d.trendEHS.abiertos }, { name: 'VALIDADO', data: d.trendEHS.cerrados } ]
-                            }, true, true);
-                        }
-                        if (chartTrendRef && d.trendRef) { 
-                            chartTrendRef.updateOptions({ 
-                                xaxis: { categories: d.trendRef.categories },
-                                series: [ { name: 'SOLICITUDES', data: d.trendRef.abiertos }, { name: 'ENTREGADAS', data: d.trendRef.cerrados } ]
-                            }, true, true);
-                        }
-                    } catch(e) { console.error("Error refresh:", e); }
-                })
-                .withFailureHandler(function(err) {
-                    var loader = document.getElementById('loading-overlay');
-                    if (loader) loader.style.display = 'none';
-                })
-                .getDashboardData();
+        // Lectura directa desde Firebase Firestore
+        const docRef = doc(db, "resumen_ejecutivo", "ultimo_calculo");
+        const docSnap = await getDoc(docRef);
+
+        if (loader) loader.style.display = 'none';
+
+        if (!docSnap.exists()) {
+            console.warn("No se encontró el documento en Firebase.");
+            return;
+        }
+
+        const d = docSnap.data();
+
+        // Si los datos vienen serializados como texto JSON, los parseamos de forma segura
+        const programados = Number(d.programados) || 0;
+        const realizados = Number(d.realizados) || 0;
+        const ehsAbiertos = Number(d.ehsAbiertos) || 0;
+        const ehsValidados = Number(d.ehsValidados) || 0;
+        const refSolicitadas = Number(d.refSolicitadas) || 0;
+        const refEntregadas = Number(d.refEntregadas) || 0;
+
+        // Actualización de elementos en el DOM
+        const setVal = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.innerText = val;
+        };
+
+        setVal('d-prog', programados);
+        setVal('d-real', realizados);
+        setVal('d-ehs-a', ehsAbiertos);
+        setVal('d-ehs-v', ehsValidados);
+        setVal('d-ref-s', refSolicitadas);
+        setVal('d-ref-e', refEntregadas);
+
+        // Cálculos y actualización de gráficas
+        let totalMtto = programados + realizados;
+        let pMtto = totalMtto > 0 ? (realizados * 100) / totalMtto : 0;
+        if (typeof chartMtto !== 'undefined' && chartMtto) {
+            chartMtto.updateSeries([parseFloat(pMtto.toFixed(1))]);
+        }
+
+        let totalEHS = ehsAbiertos + ehsValidados;
+        let pEHS = totalEHS > 0 ? (ehsValidados * 100) / totalEHS : 0;
+        if (typeof chartEHS !== 'undefined' && chartEHS) {
+            chartEHS.updateSeries([parseFloat(pEHS.toFixed(1))]);
+        }
+
+        let pRef = refSolicitadas > 0 ? (refEntregadas * 100) / refSolicitadas : 0;
+        if (typeof chartRef !== 'undefined' && chartRef) {
+            chartRef.updateSeries([parseFloat(pRef.toFixed(1))]);
+        }
+
+        // Tendencias (si existen en el objeto de datos)
+        if (typeof chartTrendMtto !== 'undefined' && chartTrendMtto && d.trendMtto) {
+            chartTrendMtto.updateOptions({
+                xaxis: { categories: d.trendMtto.categories },
+                series: [ { name: 'ABIERTO', data: d.trendMtto.abiertos }, { name: 'CERRADO', data: d.trendMtto.cerrados } ]
+            }, true, true);
+        }
+
+        if (typeof chartTrendEHS !== 'undefined' && chartTrendEHS && d.trendEHS) {
+            chartTrendEHS.updateOptions({
+                xaxis: { categories: d.trendEHS.categories },
+                series: [ { name: 'PENDIENTE', data: d.trendEHS.abiertos }, { name: 'VALIDADO', data: d.trendEHS.cerrados } ]
+            }, true, true);
+        }
+
+        if (typeof chartTrendRef !== 'undefined' && chartTrendRef && d.trendRef) {
+            chartTrendRef.updateOptions({
+                xaxis: { categories: d.trendRef.categories },
+                series: [ { name: 'SOLICITUDES', data: d.trendRef.abiertos }, { name: 'ENTREGADAS', data: d.trendRef.cerrados } ]
+            }, true, true);
+        }
+
+    } catch(e) {
+        console.error("Error en refresh desde Firebase:", e);
+        var loader = document.getElementById('loading-overlay');
+        if (loader) loader.style.display = 'none';
+    }
+
+    // Llamar al centro de comando si la función existe
+    if (typeof cargarDatosCentroComando === 'function') {
+        cargarDatosCentroComando();
+    }
+}
 
             // 🎯 MODIFICACIÓN: LLAMAR AL CENTRO DE COMANDO AL REFRESCAR EL SISTEMA
             if (typeof cargarDatosCentroComando === 'function') {
