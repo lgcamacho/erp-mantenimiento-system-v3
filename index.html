@@ -5,59 +5,121 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WORKPULSE</title>
 
+  <!-- =====================================================================
+       WORKPULSE · CONFIGURACIÓN DEL BACKEND
+       Este bloque debe ir ANTES de cualquier otro script de la página.
+       ===================================================================== -->
   <script>
-    // URL pública del Web App (sin /a/macros/nidec-ga.com/)
-    const URL_API_SHEETS = "https://script.google.com/a/macros/nidec-ga.com/s/AKfycbzxjh9_2rnmdfuF_6aSxBb3cHX-jB4fcI8yYlpsjphCc6yv-EyIIl2YJaP1z7XmaKT_/exec";
-
-    function setTexto(id, valor) {
-      const el = document.getElementById(id);
-      if (el) el.innerText = valor;
-    }
-
-    async function sincronizarTableroNidec() {
-      try {
-        // Sin headers personalizados para evitar preflight CORS
-        const response = await fetch(URL_API_SHEETS, { redirect: "follow" });
-        if (!response.ok) throw new Error("HTTP " + response.status);
-
-        const texto = await response.text();
-        let data;
-        try {
-          data = JSON.parse(texto);
-        } catch (e) {
-          throw new Error("La API no devolvió JSON (¿pide login o no es pública?)");
-        }
-
-        console.log("Datos sincronizados con éxito:", data);
-
-        setTexto('meta-turno', data.meta);
-        setTexto('prod-real', data.produccionReal);
-
-        const totalParos =
-          (data.hombre || 0) + (data.maquina || 0) + (data.material || 0) +
-          (data.metodo || 0) + (data.calidad || 0) + (data.otros || 0);
-        setTexto('total-paros', totalParos + " min");
-
-        setTexto('fallas-criticas', data.falla);
-      } catch (error) {
-        console.error("Error al conectar con la API de Google:", error);
-      }
-    }
-
-    // Ejecutar al cargar la página y refrescar cada 60 segundos
-    document.addEventListener("DOMContentLoaded", () => {
-      sincronizarTableroNidec();
-      setInterval(sincronizarTableroNidec, 60000);
+    window.WORKPULSE_CONFIG = Object.freeze({
+      // URL del Web App de Apps Script (Implementar > Administrar implementaciones > URL).
+      // Debe terminar en /exec y la implementación debe tener acceso "Cualquier persona"
+      // para que GitHub Pages pueda llamarla sin sesión de Google.
+      apiUrl: "https://script.google.com/macros/s/AKfycbzxjh9_2rnmdfuF_6aSxBb3cHX-jB4fcI8yYlpsjphCc6yv-EyIIl2YJaP1z7XmaKT_/exec",
+      // Apps Script corta ejecuciones a los 6 min; esperamos un poco menos.
+      timeoutMs: 330000
     });
   </script>
-</head>
-<script>
-  // Ejecutar al cargar la página y refrescar automáticamente cada 10 segundos
-  document.addEventListener("DOMContentLoaded", function() {
-    sincronizarTableroNidec();
-    setInterval(sincronizarTableroNidec, 10000);
-  });
-</script>
+
+  <!-- =====================================================================
+       PUENTE DE COMPATIBILIDAD google.script.run  ->  fetch() al Web App
+       - Dentro de Apps Script (HtmlService) no hace nada: se usa el original.
+       - En GitHub Pages crea un google.script.run equivalente que envía
+         { fn, args } por POST a doPost() y entrega la respuesta a los
+         mismos withSuccessHandler / withFailureHandler / withUserObject.
+       ===================================================================== -->
+  <script>
+  (function () {
+    "use strict";
+
+    if (window.google && window.google.script && window.google.script.run) return;
+
+    var cfg = window.WORKPULSE_CONFIG || {};
+
+    function llamarServidor(nombreFuncion, args) {
+      if (!cfg.apiUrl || cfg.apiUrl.indexOf("/exec") === -1) {
+        return Promise.reject(new Error("WORKPULSE_CONFIG.apiUrl no está configurada."));
+      }
+      var ctrl = (typeof AbortController === "function") ? new AbortController() : null;
+      var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, cfg.timeoutMs || 330000) : null;
+
+      return fetch(cfg.apiUrl, {
+        method: "POST",
+        // text/plain = "petición simple": el navegador no envía preflight OPTIONS,
+        // que Apps Script no sabe responder.
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ fn: nombreFuncion, args: args }),
+        redirect: "follow",
+        signal: ctrl ? ctrl.signal : undefined
+      })
+        .then(function (resp) {
+          if (!resp.ok) throw new Error("HTTP " + resp.status + " al ejecutar " + nombreFuncion);
+          return resp.text();
+        })
+        .then(function (texto) {
+          var data;
+          try { data = JSON.parse(texto); }
+          catch (e) {
+            throw new Error("El servidor no devolvió JSON. Revisa que el Web App esté implementado con acceso 'Cualquier persona' y que la URL sea la de /exec.");
+          }
+          if (!data || data.ok !== true) throw new Error((data && data.error) || "Respuesta inválida del servidor.");
+          return data.result;
+        })
+        .catch(function (err) {
+          if (err && err.name === "AbortError") throw new Error("Tiempo de espera agotado al ejecutar " + nombreFuncion + ".");
+          if (err instanceof TypeError) throw new Error("No se pudo contactar al servidor de WorkPulse (red o CORS). " + err.message);
+          throw err;
+        })
+        .finally(function () { if (timer) clearTimeout(timer); });
+    }
+
+    // Cada acceso a google.script.run devuelve un "runner" nuevo, igual que en Apps Script,
+    // para que llamadas en paralelo (p. ej. dentro de un forEach) no compartan handlers.
+    function crearRunner() {
+      var alExito = null, alFallar = null, objetoUsuario;
+      var runner;
+      var metodos = {
+        withSuccessHandler: function (fn) { alExito = fn; return runner; },
+        withFailureHandler: function (fn) { alFallar = fn; return runner; },
+        withUserObject: function (obj) { objetoUsuario = obj; return runner; }
+      };
+      runner = new Proxy(metodos, {
+        get: function (obj, prop) {
+          if (Object.prototype.hasOwnProperty.call(obj, prop)) return obj[prop];
+          if (typeof prop !== "string" || prop === "then") return undefined;
+          return function () {
+            var args = Array.prototype.slice.call(arguments);
+            var ok = alExito, ko = alFallar, usr = objetoUsuario;
+            llamarServidor(prop, args).then(
+              function (resultado) { if (typeof ok === "function") ok(resultado, usr); },
+              function (err) {
+                var error = (err instanceof Error) ? err : new Error(String(err));
+                if (typeof ko === "function") ko(error, usr);
+                else console.error("[WorkPulse] " + prop + ":", error);
+              }
+            ).catch(function (errHandler) {
+              console.error("[WorkPulse] Error dentro del handler de " + prop + ":", errHandler);
+            });
+          };
+        }
+      });
+      return runner;
+    }
+
+    var g = window.google || {};
+    var s = g.script || {};
+    Object.defineProperty(s, "run", { get: crearRunner, configurable: true, enumerable: true });
+    g.script = s;
+    window.google = g;
+
+    // Acceso moderno con async/await:  const r = await WorkPulseAPI.llamar("getDashboardData");
+    window.WorkPulseAPI = Object.freeze({
+      llamar: function (nombreFuncion) {
+        return llamarServidor(nombreFuncion, Array.prototype.slice.call(arguments, 1));
+      }
+    });
+  })();
+  </script>
+
     <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
     <!-- LIBRERÍAS PARA CÓDIGO DE BARRAS Y CAPTURA DE PANTALLA -->
     <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
@@ -1065,7 +1127,7 @@ body.alarm-active-bg {
 </button>
             </div>
             <div class="header-sub-text">
-                <span>AI Manufacturing Management System Powered by Google Cloud</span>
+                <span>AI Manufacturing Management System</span>
                 <span style="color:#cbd5e1;">|</span>
                 <span class="live-clock" id="reloj-en-vivo">...</span>
                 <span style="color:#cbd5e1;">|</span>
@@ -1105,6 +1167,280 @@ body.alarm-active-bg {
 
 
 
+
+
+<!-- ========================================================================= -->
+<!-- PODIO DE SUPERVISORES · FIRESTORE EN TIEMPO REAL                           -->
+<!-- Lee resumen_ejecutivo/ultimo_calculo (campo rankingSup) y pinta el podio.  -->
+<!-- ========================================================================= -->
+<style>
+  #dashboard-app-container { padding: 15px 20px 0; box-sizing: border-box; width: 100%; }
+  .wp-podio-panel { background: #ffffff; border: 2px solid #009B4A; border-radius: 10px; padding: 14px 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+  .wp-podio-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; border-bottom: 3px solid #009B4A; padding-bottom: 8px; margin-bottom: 14px; }
+  .wp-podio-head h2 { margin: 0; color: #009B4A; font-size: 16px; font-weight: 900; text-transform: uppercase; letter-spacing: .5px; }
+  .wp-podio-meta { font-size: 11px; font-weight: 800; color: #64748b; }
+  .wp-podio-meta.wp-alerta { color: #b45309; }
+  .wp-podio-grid { display: flex; justify-content: center; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+  .wp-podio-card { flex: 1 1 200px; max-width: 280px; text-align: center; border-radius: 12px; padding: 12px; box-sizing: border-box; border: 3px solid; }
+  .wp-podio-card.p1 { background: #fffbeb; border-color: #f59e0b; padding-top: 22px; padding-bottom: 22px; }
+  .wp-podio-card.p2 { background: #f1f5f9; border-color: #94a3b8; }
+  .wp-podio-card.p3 { background: #fff7ed; border-color: #d97706; }
+  .wp-podio-medalla { font-size: 32px; line-height: 1; }
+  .wp-podio-nombre { font-weight: 900; font-size: 15px; color: #0f172a; margin-top: 6px; word-break: break-word; }
+  .wp-podio-lineas { font-size: 11px; font-weight: 700; color: #64748b; margin-top: 4px; }
+  .wp-podio-perf { font-size: 28px; font-weight: 900; margin-top: 6px; }
+  .wp-podio-card.p1 .wp-podio-perf { color: #b45309; }
+  .wp-podio-card.p2 .wp-podio-perf { color: #475569; }
+  .wp-podio-card.p3 .wp-podio-perf { color: #9a3412; }
+  .wp-podio-barra { height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-top: 6px; }
+  .wp-podio-barra > span { display: block; height: 100%; background: #009B4A; }
+  .wp-podio-resto { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 12px; }
+  .wp-podio-resto th { background: #009B4A; color: #fff; padding: 6px; text-align: left; }
+  .wp-podio-resto td { padding: 6px; border-bottom: 1px solid #e2e8f0; }
+  .wp-podio-resto td.num { text-align: right; font-weight: 900; }
+  .wp-podio-estado { text-align: center; padding: 18px; font-weight: 800; color: #64748b; }
+  .wp-podio-estado.wp-error { color: #b91c1c; }
+  @media (max-width: 768px) {
+    .wp-podio-grid { flex-direction: column; align-items: stretch; }
+    .wp-podio-card { max-width: 100%; }
+  }
+</style>
+
+<section id="dashboard-app-container" aria-live="polite"></section>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js";
+  import { getFirestore, doc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js";
+
+  // 1) CONFIGURACIÓN: cópiala de Firebase Console > Configuración del proyecto > Tus apps > App web.
+  //    Estos valores NO son secretos (identifican el proyecto); la seguridad la dan las Reglas de Firestore.
+  const firebaseConfig = {
+    apiKey: "TU_API_KEY",
+    authDomain: "TU_PROYECTO.firebaseapp.com",
+    projectId: "TU_PROYECTO",
+    appId: "TU_APP_ID"
+  };
+
+  const RUTA_COLECCION = "resumen_ejecutivo";
+  const ID_DOCUMENTO = "ultimo_calculo";
+  const MINUTOS_DATO_VIEJO = 15;   // si el cálculo tiene más antigüedad, se avisa
+  const MAX_SUPERVISORES = 50;     // límite defensivo de filas a pintar
+
+  // ---------- Utilidades de DOM seguras (solo textContent, nunca innerHTML con datos) ----------
+  function el(tag, clase, texto) {
+    const nodo = document.createElement(tag);
+    if (clase) nodo.className = clase;
+    if (texto !== undefined && texto !== null) nodo.textContent = String(texto);
+    return nodo;
+  }
+
+  function pintarEstado(contenedor, mensaje, esError = false) {
+    const panel = el("div", "wp-podio-panel");
+    panel.appendChild(el("div", "wp-podio-estado" + (esError ? " wp-error" : ""), mensaje));
+    contenedor.replaceChildren(panel);
+  }
+
+  // ---------- Validación / normalización de datos ----------
+  // rankingSup puede llegar como arreglo nativo de Firestore o como texto JSON.
+  function normalizarRanking(valor) {
+    let lista = valor;
+    if (typeof valor === "string") {
+      try { lista = JSON.parse(valor); } catch { throw new Error("rankingSup no es un JSON válido."); }
+    }
+    if (!Array.isArray(lista)) return [];
+
+    return lista
+      .filter((s) => s && typeof s === "object" && String(s.supervisor ?? "").trim() !== "")
+      .map((s) => {
+        const perf = Number(s.perfGlobal);
+        return {
+          supervisor: String(s.supervisor).trim(),
+          lineas: Array.isArray(s.lineas) ? s.lineas.join(", ") : String(s.lineas ?? "").trim(),
+          perfGlobal: Number.isFinite(perf) ? Math.round(perf * 10) / 10 : 0
+        };
+      })
+      .sort((a, b) => b.perfGlobal - a.perfGlobal)
+      .slice(0, MAX_SUPERVISORES);
+  }
+
+  function fechaActualizacion(data) {
+    const t = data?.actualizadoEn;
+    if (t && typeof t.toDate === "function") return t.toDate();        // Timestamp de Firestore
+    if (typeof t === "string" && !Number.isNaN(Date.parse(t))) return new Date(t);
+    return null;
+  }
+
+  // ---------- Render ----------
+  function crearTarjeta(sup, puesto) {
+    const medallas = { 1: "🥇", 2: "🥈", 3: "🥉" };
+    const card = el("div", "wp-podio-card p" + puesto);
+    card.appendChild(el("div", "wp-podio-medalla", medallas[puesto]));
+    card.appendChild(el("div", "wp-podio-nombre", sup.supervisor));
+    card.appendChild(el("div", "wp-podio-lineas", "Líneas: " + (sup.lineas || "—")));
+    card.appendChild(el("div", "wp-podio-perf", sup.perfGlobal + "%"));
+    const barra = el("div", "wp-podio-barra");
+    const relleno = el("span");
+    relleno.style.width = Math.max(0, Math.min(100, sup.perfGlobal)) + "%";
+    barra.appendChild(relleno);
+    card.appendChild(barra);
+    return card;
+  }
+
+  function pintarPodio(contenedor, ranking, info) {
+    const panel = el("div", "wp-podio-panel");
+
+    const head = el("div", "wp-podio-head");
+    head.appendChild(el("h2", null, "🏆 Podio de supervisores · Performance global"));
+    const meta = el("div", "wp-podio-meta");
+    if (info.actualizado) {
+      const minutos = (Date.now() - info.actualizado.getTime()) / 60000;
+      meta.textContent = "Actualizado: " + info.actualizado.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+      if (minutos > MINUTOS_DATO_VIEJO) {
+        meta.textContent += " · ⚠️ dato con más de " + MINUTOS_DATO_VIEJO + " min";
+        meta.classList.add("wp-alerta");
+      }
+    }
+    if (info.desdeCache) {
+      meta.textContent += " · sin conexión (caché)";
+      meta.classList.add("wp-alerta");
+    }
+    head.appendChild(meta);
+    panel.appendChild(head);
+
+    if (ranking.length === 0) {
+      panel.appendChild(el("div", "wp-podio-estado", "Aún no hay supervisores con registros en el último cálculo."));
+      contenedor.replaceChildren(panel);
+      return;
+    }
+
+    // Orden visual de podio: 2º – 1º – 3º
+    const grid = el("div", "wp-podio-grid");
+    [2, 1, 3].forEach((puesto) => {
+      const sup = ranking[puesto - 1];
+      if (sup) grid.appendChild(crearTarjeta(sup, puesto));
+    });
+    panel.appendChild(grid);
+
+    // Del 4º lugar en adelante, en tabla
+    if (ranking.length > 3) {
+      const tabla = el("table", "wp-podio-resto");
+      const thead = el("thead");
+      const trh = el("tr");
+      ["#", "Supervisor", "Líneas", "Performance"].forEach((t) => trh.appendChild(el("th", null, t)));
+      thead.appendChild(trh);
+      const tbody = el("tbody");
+      ranking.slice(3).forEach((sup, i) => {
+        const tr = el("tr");
+        tr.appendChild(el("td", null, i + 4));
+        tr.appendChild(el("td", null, sup.supervisor));
+        tr.appendChild(el("td", null, sup.lineas || "—"));
+        tr.appendChild(el("td", "num", sup.perfGlobal + "%"));
+        tbody.appendChild(tr);
+      });
+      tabla.append(thead, tbody);
+      panel.appendChild(tabla);
+    }
+
+    contenedor.replaceChildren(panel);
+  }
+
+  function mensajeDeError(err) {
+    switch (err?.code) {
+      case "permission-denied":
+        return "Firestore rechazó la lectura (permission-denied). Revisa las Reglas de seguridad del documento resumen_ejecutivo/ultimo_calculo.";
+      case "unavailable":
+        return "Firestore no está disponible en este momento. Revisa la conexión a internet.";
+      case "failed-precondition":
+        return "Firestore no está inicializado en este proyecto (créalo en Firebase Console).";
+      default:
+        return "No se pudo leer el podio desde Firestore: " + (err?.message || err);
+    }
+  }
+
+  // ---------- Acceso a Firestore ----------
+  let refDocumento = null;
+
+  // Lectura única con async/await (útil para pruebas o un botón "Actualizar").
+  async function leerRankingUnaVez() {
+    const snap = await getDoc(refDocumento);
+    if (!snap.exists()) return [];
+    return normalizarRanking(snap.data().rankingSup);
+  }
+
+  // Convierte el listener en una Promesa que se resuelve con el PRIMER snapshot,
+  // para poder usar await y, después, seguir recibiendo cambios en tiempo real.
+  function escucharDocumento(ref, alCambiar, alError) {
+    return new Promise((resolve, reject) => {
+      let primeraVez = true;
+      const cancelar = onSnapshot(
+        ref,
+        (snap) => { alCambiar(snap); if (primeraVez) { primeraVez = false; resolve(cancelar); } },
+        (err) => { alError(err); if (primeraVez) { primeraVez = false; reject(err); } }
+      );
+    });
+  }
+
+  let cancelarEscucha = null;
+
+  async function iniciarPodioSupervisores() {
+    const contenedor = document.getElementById("dashboard-app-container");
+    if (!contenedor) return;
+
+    if (firebaseConfig.projectId.startsWith("TU_")) {
+      pintarEstado(contenedor, "Podio en tiempo real: falta configurar firebaseConfig en index.html.", true);
+      return;
+    }
+
+    pintarEstado(contenedor, "Conectando con Firestore…");
+
+    try {
+      if (!refDocumento) {                       // inicializar Firebase una sola vez
+        const app = initializeApp(firebaseConfig);
+        refDocumento = doc(getFirestore(app), RUTA_COLECCION, ID_DOCUMENTO);
+      }
+
+      cancelarEscucha = await escucharDocumento(
+        refDocumento,
+        (snap) => {
+          if (!snap.exists()) {
+            pintarEstado(contenedor, "El documento " + RUTA_COLECCION + "/" + ID_DOCUMENTO + " todavía no existe.");
+            return;
+          }
+          try {
+            const data = snap.data();
+            pintarPodio(contenedor, normalizarRanking(data.rankingSup), {
+              actualizado: fechaActualizacion(data),
+              desdeCache: snap.metadata.fromCache
+            });
+          } catch (errDatos) {
+            pintarEstado(contenedor, errDatos.message, true);
+          }
+        },
+        (err) => {
+          console.error("[Podio Firestore]", err);
+          pintarEstado(contenedor, mensajeDeError(err), true);
+        }
+      );
+    } catch (err) {
+      // El error ya se pintó en el callback de onSnapshot; aquí solo cubrimos fallas de inicialización.
+      if (!cancelarEscucha) {
+        console.error("[Podio Firestore]", err);
+        pintarEstado(contenedor, mensajeDeError(err), true);
+      }
+    }
+  }
+
+  // Liberar el listener al salir de la página y reabrirlo si el navegador la restaura de caché.
+  window.addEventListener("pagehide", () => { if (cancelarEscucha) { cancelarEscucha(); cancelarEscucha = null; } });
+  window.addEventListener("pageshow", (e) => { if (e.persisted && !cancelarEscucha) iniciarPodioSupervisores(); });
+
+  // Disponible en consola para pruebas:  await leerRankingUnaVez()
+  window.leerRankingUnaVez = leerRankingUnaVez;
+
+  // Los <script type="module"> se ejecutan cuando el HTML ya está parseado (son diferidos).
+  iniciarPodioSupervisores();
+</script>
+<!-- ========================= FIN PODIO FIRESTORE ========================= -->
 
 <!-- ========================================================================= -->
 <!-- CENTRO DE COMANDO WORKPULSE (8 KPIs WCM) -->
@@ -3257,28 +3593,15 @@ function updateClock() {
           
         });
 
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.x.x/firebase-firestore.js";
+function refresh() {
+    var loader = document.getElementById('loading-overlay');
+    if (loader) loader.style.display = 'block';
 
-async function refresh() {
-    try {
-        // Ocultar/Mostrar el loader (engrane)
-        var loader = document.getElementById('loading-overlay');
-        if (loader) loader.style.display = 'block';
-
-        // Lectura directa desde Firebase Firestore
-        const docRef = doc(db, "resumen_ejecutivo", "ultimo_calculo");
-        const docSnap = await getDoc(docRef);
-
+    google.script.run
+      .withSuccessHandler(function(d) {
         if (loader) loader.style.display = 'none';
+        if (!d || d.errorServer) { console.warn("getDashboardData:", d && d.errorServer); return; }
 
-        if (!docSnap.exists()) {
-            console.warn("No se encontró el documento en Firebase.");
-            return;
-        }
-
-        const d = docSnap.data();
-
-        // Si los datos vienen serializados como texto JSON, los parseamos de forma segura
         const programados = Number(d.programados) || 0;
         const realizados = Number(d.realizados) || 0;
         const ehsAbiertos = Number(d.ehsAbiertos) || 0;
@@ -3286,12 +3609,10 @@ async function refresh() {
         const refSolicitadas = Number(d.refSolicitadas) || 0;
         const refEntregadas = Number(d.refEntregadas) || 0;
 
-        // Actualización de elementos en el DOM
-        const setVal = (id, val) => {
+        const setVal = function(id, val) {
             const el = document.getElementById(id);
             if (el) el.innerText = val;
         };
-
         setVal('d-prog', programados);
         setVal('d-real', realizados);
         setVal('d-ehs-a', ehsAbiertos);
@@ -3299,39 +3620,29 @@ async function refresh() {
         setVal('d-ref-s', refSolicitadas);
         setVal('d-ref-e', refEntregadas);
 
-        // Cálculos y actualización de gráficas
         let totalMtto = programados + realizados;
         let pMtto = totalMtto > 0 ? (realizados * 100) / totalMtto : 0;
-        if (typeof chartMtto !== 'undefined' && chartMtto) {
-            chartMtto.updateSeries([parseFloat(pMtto.toFixed(1))]);
-        }
+        if (typeof chartMtto !== 'undefined' && chartMtto) chartMtto.updateSeries([parseFloat(pMtto.toFixed(1))]);
 
         let totalEHS = ehsAbiertos + ehsValidados;
         let pEHS = totalEHS > 0 ? (ehsValidados * 100) / totalEHS : 0;
-        if (typeof chartEHS !== 'undefined' && chartEHS) {
-            chartEHS.updateSeries([parseFloat(pEHS.toFixed(1))]);
-        }
+        if (typeof chartEHS !== 'undefined' && chartEHS) chartEHS.updateSeries([parseFloat(pEHS.toFixed(1))]);
 
         let pRef = refSolicitadas > 0 ? (refEntregadas * 100) / refSolicitadas : 0;
-        if (typeof chartRef !== 'undefined' && chartRef) {
-            chartRef.updateSeries([parseFloat(pRef.toFixed(1))]);
-        }
+        if (typeof chartRef !== 'undefined' && chartRef) chartRef.updateSeries([parseFloat(pRef.toFixed(1))]);
 
-        // Tendencias (si existen en el objeto de datos)
         if (typeof chartTrendMtto !== 'undefined' && chartTrendMtto && d.trendMtto) {
             chartTrendMtto.updateOptions({
                 xaxis: { categories: d.trendMtto.categories },
                 series: [ { name: 'ABIERTO', data: d.trendMtto.abiertos }, { name: 'CERRADO', data: d.trendMtto.cerrados } ]
             }, true, true);
         }
-
         if (typeof chartTrendEHS !== 'undefined' && chartTrendEHS && d.trendEHS) {
             chartTrendEHS.updateOptions({
                 xaxis: { categories: d.trendEHS.categories },
                 series: [ { name: 'PENDIENTE', data: d.trendEHS.abiertos }, { name: 'VALIDADO', data: d.trendEHS.cerrados } ]
             }, true, true);
         }
-
         if (typeof chartTrendRef !== 'undefined' && chartTrendRef && d.trendRef) {
             chartTrendRef.updateOptions({
                 xaxis: { categories: d.trendRef.categories },
@@ -3339,23 +3650,14 @@ async function refresh() {
             }, true, true);
         }
 
-    } catch(e) {
-        console.error("Error en refresh desde Firebase:", e);
-        var loader = document.getElementById('loading-overlay');
+        if (typeof cargarDatosCentroComando === 'function') cargarDatosCentroComando();
+      })
+      .withFailureHandler(function(err) {
         if (loader) loader.style.display = 'none';
-    }
-
-    // Llamar al centro de comando si la función existe
-    if (typeof cargarDatosCentroComando === 'function') {
-        cargarDatosCentroComando();
-    }
+        console.error("Error en refresh:", err);
+      })
+      .getDashboardData();
 }
-
-            // 🎯 MODIFICACIÓN: LLAMAR AL CENTRO DE COMANDO AL REFRESCAR EL SISTEMA
-            if (typeof cargarDatosCentroComando === 'function') {
-                cargarDatosCentroComando();
-            }
-        }
 
         function abrirModal(id) { document.getElementById(id).style.display = 'flex'; }
         function cerrarModal(id) { document.getElementById(id).style.display = 'none'; }
@@ -3502,7 +3804,7 @@ function loading(mensaje) {
     // Actualizamos el texto
     let textObj = document.getElementById('loading-text');
     if (textObj) {
-        textObj.innerText = mensaje || "SUBIENDO INFORMACIÓN A GOOGLE CLOUD...";
+        textObj.innerText = mensaje || "SUBIENDO INFORMACIÓN AL SERVIDOR...";
     }
 }
 
@@ -4111,7 +4413,7 @@ function abrirGestionFugas() {
     "      <div class='header-title-box'>" +
     "        <h1>WORKPULSE</h1>" +
     "        <div class='header-sub-text'>" +
-    "          <span>AI Manufacturing Management System Powered by Google Cloud</span>" +
+    "          <span>AI Manufacturing Management System</span>" +
     "          <span style='color:#cbd5e1;'>|</span>" +
     "          <span class='live-clock' id='reloj-fugas'>Sincronizando...</span>" +
     "          <span style='color:#cbd5e1;'>|</span>" +
@@ -4241,7 +4543,7 @@ function abrirGestionFugas() {
 function abrirHistorialNuevaPestana() {
     let win = window.open('', '_blank'); 
     if(!win) return alert("⚠️ Tu celular bloqueó la ventana emergente.");
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Historial</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>"); 
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Historial</h2><p>AI Manufacturing Management System</p></div>"); 
     loading("Procesando Historial...");
 
     let JS_OPEN = "<sc" + "ript>";
@@ -4335,7 +4637,7 @@ function abrirHistorialNuevaPestana() {
         "  </div>" +
         "  <div class='header-right' style='display:flex; flex-direction:column; align-items:flex-end; text-align:right;'>" +
         "    <div style='color:#009B4A; font-size:22px; font-weight:900; letter-spacing:0.5px; line-height:1; text-transform:uppercase;'>WORKPULSE</div>" +
-        "    <div style='color:#64748b; font-size:10px; font-weight:700; margin-top:4px;'>PS-Manufacturing Operation System • AI Manufacturing Management System Powered by Google Cloud</div>" +
+        "    <div style='color:#64748b; font-size:10px; font-weight:700; margin-top:4px;'>PS-Manufacturing Operation System • AI Manufacturing Management System</div>" +
         "  </div>" +
         "</div>" +
 
@@ -4582,7 +4884,7 @@ window.reconstruirVistaRefaccionesPestana = function(winTarget) {
                 "  </div>" +
                 "  <div class='header-right' style='display:flex; flex-direction:column; align-items:flex-end; text-align:right; flex-shrink:0;'>" +
                 "    <div style='color:#009B4A; font-size:24px; font-weight:900; letter-spacing:0.5px; line-height:1; text-transform:uppercase;'>WORKPULSE</div>" +
-                "    <div style='color:#64748b; font-size:11px; font-weight:700; margin-top:4px;'>AI Manufacturing Management System Powered by Google Cloud</div>" +
+                "    <div style='color:#64748b; font-size:11px; font-weight:700; margin-top:4px;'>AI Manufacturing Management System</div>" +
                 "  </div>" +
                 "</div>";
 
@@ -5279,7 +5581,7 @@ window.reconstruirVistaRefaccionesPestana = function(winTarget) {
         
         function abrirRefaccionesNuevaPestana() {
             winRefaccionesHandle = window.open('', '_blank'); if(!winRefaccionesHandle) { alert("⚠️ Tu celular bloqueó la ventana emergente."); return; }
-            winRefaccionesHandle.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#f59e0b;'>Cargando Módulo de Refacciones</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+            winRefaccionesHandle.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#f59e0b;'>Cargando Módulo de Refacciones</h2><p>AI Manufacturing Management System</p></div>");
             loading("Procesando Módulo de Refacciones...");
             window.reconstruirVistaRefaccionesPestana(winRefaccionesHandle);
         }
@@ -5620,7 +5922,7 @@ function abrirTarjetasMttoNuevaPestana() {
     let win = window.open('', '_blank');
     if (!win) { alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador."); return; }
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#2563eb;'>CARGANDO TARJETAS DE MANTENIMIENTO...</h2><p>POWERED BY GOOGLE CLOUD</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#2563eb;'>CARGANDO TARJETAS DE MANTENIMIENTO...</h2><p>WORKPULSE</p></div>");
     loading("Procesando Tarjetas y Vinculando Refacciones...");
 
     // 👇 ESTAS 3 LÍNEAS FALTABAN Y ROMPÍAN EL BOTÓN 👇
@@ -5864,7 +6166,7 @@ function abrirTarjetasMttoNuevaPestana() {
                         "  </div>" +
                         "  <div class='header-right' style='text-align:right;'>" +
                         "    <div style='color:#009B4A; font-size:28px; font-weight:900;'>WORKPULSE</div>" +
-                        "    <div style='color:#64748b; font-size:13px; font-weight:800;'>AI Manufacturing Management System Powered by Google Cloud</div>" +
+                        "    <div style='color:#64748b; font-size:13px; font-weight:800;'>AI Manufacturing Management System</div>" +
                         "  </div>" +
                         "</div>";
 
@@ -6140,7 +6442,7 @@ function abrirTarjetasMttoNuevaPestana() {
                 win.document.close();
             }).getAllLogs();
         }).getTarjetasMttoModuloCompleto();
-    }).getPersonalData("1451MR");
+    }).getPersonalListPublic();
 }
 // =========================================================================
 // MÓDULO TOP 10 MÁQUINAS - CONSTRUCTOR VISTA PARETO 80/20 (FRONTEND)
@@ -6152,7 +6454,7 @@ function abrirTop10NuevaPestana() {
         return;
     }
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Generando Análisis de Pareto 80/20...</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Generando Análisis de Pareto 80/20...</h2><p>AI Manufacturing Management System</p></div>");
     loading("Procesando Top 10 Máquinas...");
 
     // 🔴 ESTAS TRES LÍNEAS SON VITALES Y TE FALTABAN:
@@ -6214,7 +6516,7 @@ function abrirTop10NuevaPestana() {
                 "  </div>" +
                 "  <div class='header-right' style='text-align:right;'>" +
                 "    <div style='color:#009B4A; font-size:24px; font-weight:900;'>WORKPULSE</div>" +
-                "    <div style='color:#64748b; font-size:11px; font-weight:700;'>AI Manufacturing Management System Powered by Google Cloud</div>" +
+                "    <div style='color:#64748b; font-size:11px; font-weight:700;'>AI Manufacturing Management System</div>" +
                 "  </div>" +
                 "</div>";
 
@@ -6945,7 +7247,7 @@ function abrirModalProduccion() {
         return; 
     }
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Real Time Production Data...</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Real Time Production Data...</h2><p>AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -6986,7 +7288,7 @@ function abrirModalProduccion() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='prod_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -7054,7 +7356,7 @@ function abrirLinePerformanceSelector() {
     let win = window.open('', '_blank');
     if (!win) return alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador.");
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Selector y Control de Estado de Líneas...</h2><p>Consultando catálogo WORKPULSE AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Selector y Control de Estado de Líneas...</h2><p>Consultando catálogo WORKPULSE AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -7099,7 +7401,7 @@ function abrirLinePerformanceSelector() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='line_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -7111,7 +7413,7 @@ function abrirLinePerformanceSelector() {
             "</div>";
 
     // 3. CONTENEDOR DINÁMICO DE TARJETAS DE LÍNEAS
-    html += "<div id='contenedor-grid-lineas'><p style='text-align:center; font-size:20px; font-weight:bold; color:#009B4A;'>Cargando estado actual de líneas AI Manufacturing Management System Powered by Google Cloud</p></div>";
+    html += "<div id='contenedor-grid-lineas'><p style='text-align:center; font-size:20px; font-weight:bold; color:#009B4A;'>Cargando estado actual de líneas AI Manufacturing Management System</p></div>";
 
     html += JS_OPEN;
     html += "let lineasCandidatasJS = " + JSON.stringify(lineas) + ";" +
@@ -7219,7 +7521,7 @@ function abrirLinePerformanceSelector() {
             "      turno: turno," +
             "      metas: cfgActual.metas || [300, 300, 200, 300, 300, 150, 300, 300, 150]" +
             "    };" +
-            "    document.getElementById('contenedor-grid-lineas').innerHTML = '<p style=\"text-align:center; font-size:20px; font-weight:bold; color:#009B4A;\">Actualizando catálogo - AI Manufacturing Management System Powered by Google Cloud</p>';" +
+            "    document.getElementById('contenedor-grid-lineas').innerHTML = '<p style=\"text-align:center; font-size:20px; font-weight:bold; color:#009B4A;\">Actualizando catálogo - AI Manufacturing Management System</p>';" +
             "    window.opener.google.script.run" +
             "      .withSuccessHandler(function(res) {" +
             "        if (res && res.success) {" +
@@ -7326,7 +7628,7 @@ function abrirPizarronDigitalLinea(numLinea, fechaTarget) {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='board_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -7838,7 +8140,7 @@ function abrirAdminProductionSelector() {
     let win = window.open('', '_blank');
     if (!win) return alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador.");
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Panel de Administrador</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Panel de Administrador</h2><p>AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -7868,7 +8170,7 @@ function abrirAdminProductionSelector() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='admin_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -7914,7 +8216,7 @@ function abrirDefinirMetasLinea(numLinea) {
     let win = window.open('', '_blank');
     if (!win) return alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador.");
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Parámetros de Administración - Línea " + numLinea + "...</h2><p>Obteniendo Catálogos de Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Parámetros de Administración - Línea " + numLinea + "...</h2><p>Obteniendo catálogos del servidor</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -7965,7 +8267,7 @@ function abrirDefinirMetasLinea(numLinea) {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='board_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -8148,7 +8450,7 @@ function abrirSupervisorPerformanceWindow() {
     "    <div>" +
     "      <h1>WORKPULSE</h1>" +
     "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-    "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+    "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
     "        <span id='sup_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
     "        <span>Nidec ACIM Reynosa</span>" +
     "      </div>" +
@@ -8296,7 +8598,7 @@ function abrirGeneralPerformanceWindow() {
     "    <div>" +
     "      <h1>WORKPULSE</h1>" +
     "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-    "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+    "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
     "        <span id='gen_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
     "        <span>Nidec ACIM Reynosa</span>" +
     "      </div>" +
@@ -8428,7 +8730,7 @@ window.guardarOEEServidorBridge = function(datos, callback) {
 function abrirKpisNuevaPestana() {
     let win = window.open('', '_blank');
     if(!win) { alert("⚠️ Tu celular bloqueó la ventana emergente."); return; }
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando</h2><p>AI Manufacturing Management System</p></div>");
     loading("Descargando Indicadores en G-CLOUD");
 
     // 👇 ESTAS TRES LÍNEAS FALTABAN Y SON LAS QUE ARREGLAN EL BOTÓN 👇
@@ -8499,7 +8801,7 @@ function abrirKpisNuevaPestana() {
                     "  </div>" +
                     "  <div class='header-right' style='display:flex; flex-direction:column; align-items:flex-end; text-align:right; flex-shrink:0;'>" +
                     "    <div style='color:#009B4A; font-size:24px; font-weight:900; letter-spacing:0.5px; line-height:1; text-transform:uppercase;'>WORKPULSE</div>" +
-                    "    <div style='color:#64748b; font-size:11px; font-weight:700; margin-top:4px;'>AI Manufacturing Management System Powered by Google Cloud</div>" +
+                    "    <div style='color:#64748b; font-size:11px; font-weight:700; margin-top:4px;'>AI Manufacturing Management System</div>" +
                     "  </div>" +
                     "</div>";
 
@@ -8823,7 +9125,7 @@ function abrirKpisProduccionWindow() {
     let win = window.open('', '_blank');
     if (!win) return alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador.");
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Indicadores</h2><p>Conectando AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Indicadores</h2><p>Conectando AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -8900,7 +9202,7 @@ function abrirKpisProduccionWindow() {
             "  </div>" +
             "  <div class='header-right'>" +
             "    <div class='header-brand'>WORKPULSE-IA</div>" +
-            "    <div class='header-tag'>Powered by Google Cloud</div>" +
+            "    <div class='header-tag'>WorkPulse</div>" +
             "  </div>" +
             "</div>";
 
@@ -9125,7 +9427,7 @@ function abrirPizarronGeneralProduccion() {
     let win = window.open('', '_blank');
     if (!win) return alert("⚠️ Permite las ventanas emergentes (popups) en tu navegador.");
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando MOTOR PRODUCTION BOARD...</h2><p>Calculando metas AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando MOTOR PRODUCTION BOARD...</h2><p>Calculando metas AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -9222,7 +9524,7 @@ function abrirPizarronGeneralProduccion() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='gen_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -9404,7 +9706,7 @@ function abrirPizarronGeneralProduccion() {
             "        .obtenerConfiguracionLineaAdmin(l);" +
             "    });" +
             "  } else {" +
-            "    document.getElementById('contenedor-tabla-dinamica').innerHTML = '<p style=\"color:red; text-align:center;\">Conexión con Google Cloud fallida.</p>';" +
+            "    document.getElementById('contenedor-tabla-dinamica').innerHTML = '<p style=\"color:red; text-align:center;\">No se pudo conectar con el servidor de WorkPulse.</p>';" +
             "  }" +
             "}";
 
@@ -10093,7 +10395,7 @@ function obtenerHTMLNat_MotorProductionBoardReal() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='gen_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -10384,7 +10686,7 @@ function abrirDashboardProduccionWindow() {
 
     try { win.focus(); } catch(e) {}
 
-    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Dashboard de Producción...</h2><p>Analizando distribución de paros AI Manufacturing Management System Powered by Google Cloud</p></div>");
+    win.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#009B4A;'>Cargando Dashboard de Producción...</h2><p>Analizando distribución de paros AI Manufacturing Management System</p></div>");
 
     let JS_OPEN = "<sc" + "ript>";
     let JS_CLOSE = "</sc" + "ript>";
@@ -10445,7 +10747,7 @@ function abrirDashboardProduccionWindow() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div style='display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; font-weight:700; color:#64748b;'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='dash_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -10513,7 +10815,7 @@ function abrirDashboardProduccionWindow() {
             "</div>";
 
     html += "<div class='modal-overlay' id='modal_drill_down'><div class='modal-card-full' style='height:88vh; width:92vw;'><button type='button' class='btn-close-modal' onclick='cerrarDrillDown()'>✖</button><div class='modal-header-box'><h2 id='m_linea_title' style='color:#009B4A; margin:0; font-size:26px; text-transform:uppercase;'>DESGLOSE DE LÍNEA</h2><div id='m_linea_sub' style='color:#64748b; font-size:14px; font-weight:bold; margin-top:5px;'>...</div></div><h3 style='color:#009B4A; font-size:18px; font-weight:900; text-transform:uppercase;'>🔍 HISTORIAL DE PAROS Y COMENTARIOS TÉCNICOS</h3><div style='overflow-y:auto; flex:1;'><table class='dash-table'><thead><tr><th>HORA / FECHA</th><th>HOMBRE</th><th>MÁQUINA</th><th>MATERIAL</th><th>MÉTODO</th><th>CALIDAD</th><th>PRODUCCIÓN</th><th>OTROS</th><th>TOTAL DT</th><th>COMENTARIO REGISTRADO</th><th>FALLA REGISTRADA</th></tr></thead><tbody id='m_tbl_detalles'></tbody><tfoot><tr><td style='text-align:right;'>TOTALES:</td><td id='m_foot_h' style='color:#2563eb;'>0</td><td id='m_foot_maq' style='color:#d97706;'>0</td><td id='m_foot_mat' style='color:#eab308;'>0</td><td id='m_foot_met' style='color:#16a34a;'>0</td><td id='m_foot_cal' style='color:#9333ea;'>0</td><td id='m_foot_prod' style='color:#dc2626;'>0</td><td id='m_foot_otr' style='color:#64748b;'>0</td><td id='m_foot_dt' style='font-size:18px; color:#dc2626;'>0 min</td><td></td><td></td></tr></tfoot></table></div></div></div>";
-    html += "<div class='modal-overlay' id='modal_pareto'><div class='modal-card-full'><button type='button' class='btn-close-modal' onclick='cerrarModalPareto()'>✖</button><div class='modal-header-wcm'><div class='header-left'><img src='https://www.nidec.com/files/user/www-nidec-com/corporate/about/slogan/img/img_slogan_01.png' alt='Nidec Logo'><div><h1>WORKPULSE</h1><div style='display:flex; align-items:center; gap:8px; margin-top:4px; font-size:11px; font-weight:700; color:#64748b;'><span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span><span id='modal_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span><span>Nidec ACIM Reynosa</span></div></div></div><div class='header-title-center'><h2 id='m_pareto_title_wcm'>GRAFICA DE PARETO 80/20 POR VARIABLE DE PROCESO</h2></div></div><div class='modal-body-pareto'><div id='chart_pareto_dom' style='flex:1; width:100%; height:100%; min-height:480px;'></div></div></div></div>";
+    html += "<div class='modal-overlay' id='modal_pareto'><div class='modal-card-full'><button type='button' class='btn-close-modal' onclick='cerrarModalPareto()'>✖</button><div class='modal-header-wcm'><div class='header-left'><img src='https://www.nidec.com/files/user/www-nidec-com/corporate/about/slogan/img/img_slogan_01.png' alt='Nidec Logo'><div><h1>WORKPULSE</h1><div style='display:flex; align-items:center; gap:8px; margin-top:4px; font-size:11px; font-weight:700; color:#64748b;'><span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span><span id='modal_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span><span>Nidec ACIM Reynosa</span></div></div></div><div class='header-title-center'><h2 id='m_pareto_title_wcm'>GRAFICA DE PARETO 80/20 POR VARIABLE DE PROCESO</h2></div></div><div class='modal-body-pareto'><div id='chart_pareto_dom' style='flex:1; width:100%; height:100%; min-height:480px;'></div></div></div></div>";
 
     html += JS_OPEN;
     html += "var chartInstance = null;";
@@ -10571,7 +10873,7 @@ function abrirDashboardProduccionWindow() {
             "      .obtenerDatosDashboardProduccion(fIni, fFin, chkHoy);" +
             "  } else {" +
             "    apagarLoaderBtn();" +
-            "    alert('⚠️ No se detectó la conexión con el servidor principal de Google.');" +
+            "    alert('⚠️ No se detectó la conexión con el servidor de WorkPulse.');" +
             "  }" +
             "}";
 
@@ -10781,7 +11083,7 @@ function abrirSistemaPrimerosAuxiliosEHS() {
             "    <div>" +
             "      <h1>WORKPULSE</h1>" +
             "      <div class='header-sub-text'>" +
-            "        <span>AI Manufacturing Management System Powered by Google Cloud</span><span style='color:#cbd5e1;'>|</span>" +
+            "        <span>AI Manufacturing Management System</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span id='ehs_header_clock'>Cargando fecha...</span><span style='color:#cbd5e1;'>|</span>" +
             "        <span>Nidec ACIM Reynosa</span>" +
             "      </div>" +
@@ -11471,7 +11773,7 @@ function abrirConsultarPaseModal() {
     })
     .withFailureHandler(function(err) {
       document.getElementById('loading-overlay').style.display = 'none';
-      alert("Error crítico de Google Apps Script: " + err.message);
+      alert("Error del servidor WorkPulse: " + err.message);
     })
     .obtenerTodosLosPasesRRHH(pass);
 }
@@ -11697,7 +11999,7 @@ function mostrarResumenExcelRefacciones() {
     return;
   }
 
-  ventanaResumen.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#0284c7;'>Generando Resumen Ejecutivo...</h2><p>AI Manufacturing Management System Powered by Google Cloud</p></div>");
+  ventanaResumen.document.write("<div style='font-family:sans-serif; text-align:center; padding-top:20vh;'><h2 style='color:#0284c7;'>Generando Resumen Ejecutivo...</h2><p>AI Manufacturing Management System</p></div>");
 
   var tagScriptApertura = "<sc" + "ript>";
   var tagScriptCierre = "</sc" + "ript>";
@@ -11735,7 +12037,7 @@ function mostrarResumenExcelRefacciones() {
         "</style></head><body>";
 
       codigoHTML += "<div class='header-box'>" +
-        "  <div><h2>📋 RESUMEN DE REFACCIONES EN PROCESO</h2><div style='font-size:12px; font-weight:bold; color:#64748b;'>WORKPULSE AI Manufacturing Management System Powered by Google Cloud</div></div>" +
+        "  <div><h2>📋 RESUMEN DE REFACCIONES EN PROCESO</h2><div style='font-size:12px; font-weight:bold; color:#64748b;'>WORKPULSE AI Manufacturing Management System</div></div>" +
         "  <button class='btn-imprimir' onclick='window.print()'>🖨️ IMPRIMIR / CAPTURA</button>" +
         "</div>";
 
@@ -11877,7 +12179,7 @@ function mostrarResumenEjecutivoProduccion() {
     cardContent.style.position = 'relative';
     cardContent.appendChild(closeBtnRed);
 
-    cont.innerHTML = "<div style='text-align:center; padding-top:15vh;'><h2 style='color:#009B4A; font-size:26px; font-weight:900;'>GENERANDO REPORTE DE PRODUCCIÓN EN TIEMPO REAL</h2><p style='font-size:16px; color:#64748b; font-weight:bold;'>Sincronizando indicadores WORKPULSE AI Manufacturing Management System Powered by Google Cloud</p></div>";
+    cont.innerHTML = "<div style='text-align:center; padding-top:15vh;'><h2 style='color:#009B4A; font-size:26px; font-weight:900;'>GENERANDO REPORTE DE PRODUCCIÓN EN TIEMPO REAL</h2><p style='font-size:16px; color:#64748b; font-weight:bold;'>Sincronizando indicadores WORKPULSE AI Manufacturing Management System</p></div>";
 
     google.script.run
         .withSuccessHandler(function(res) {
@@ -11969,7 +12271,7 @@ function mostrarResumenEjecutivoProduccion() {
             
             // CABECERA
             render += "  <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:4px solid #009B4A; padding-bottom:12px; margin-bottom:20px; padding-right:50px; flex-wrap:wrap; gap:10px;'>" +
-                      "    <div><h2 style='margin:0; color:#009B4A; font-weight:900; font-size:22px;'>RESUMEN DE PRODUCCIÓN EN TIEMPO REAL</h2><div style='font-size:12px; font-weight:bold; color:#64748b;'>WORKPULSE AI Manufacturing Management System Powered by Google Cloud • NIDEC MOTOR REYNOSA</div></div>" +
+                      "    <div><h2 style='margin:0; color:#009B4A; font-weight:900; font-size:22px;'>RESUMEN DE PRODUCCIÓN EN TIEMPO REAL</h2><div style='font-size:12px; font-weight:bold; color:#64748b;'>WORKPULSE AI Manufacturing Management System • NIDEC MOTOR REYNOSA</div></div>" +
                       "    <button class='btn' style='background:#009B4A !important; color:white !important; border:none; padding:8px 16px; font-weight:900; font-size:12px; border-radius:6px; cursor:pointer;' onclick='window.print()'>🖨️ IMPRIMIR / PDF</button>" +
                       "  </div>";
 
@@ -12061,61 +12363,125 @@ function mostrarResumenEjecutivoProduccion() {
             render += "    </div>" +
                       "  </div>";
 
-            // PODIO DE SUPERVISORES DE PRODUCCIÓN
-            render += "<div style='border:3px solid #f59e0b; border-radius:12px; padding:15px; background:#fff; margin-top:10px;'>";
-            render += "  <h3 style='color:#d97706; text-align:center; font-size:16px; font-weight:900; text-transform:uppercase; margin-top:0; margin-bottom:12px;'>🏆 SUPERVISOR PERFORMANCE - PODIO DE RECONOCIMIENTO EN TIEMPO REAL</h3>";
-
-            var top1 = rankingSup[0] || null;
-            var top2 = rankingSup[1] || null;
-            var top3 = rankingSup[2] || null;
-
-            var htmlPodio = "<div class='podio-flex-container'>";
-
-            if (top2) {
-                htmlPodio += "<div class='podio-card-item' style='flex:1; background:#f1f5f9; border:2.5px solid #94a3b8; border-radius:12px; padding:10px; text-align:center; max-width:270px;'>" +
-                             "  <div style='font-size:28px;'>🥈</div>" +
-                             "  <div style='font-size:11px; font-weight:900; color:#475569; text-transform:uppercase;'>2DO LUGAR</div>" +
-                             "  <div style='font-size:14px; font-weight:900; color:#0f172a; margin:4px 0;'>" + top2.supervisor + "</div>" +
-                             "  <div style='font-size:11px; color:#64748b; font-weight:bold;'>Líneas: " + top2.lineas + "</div>" +
-                             "  <div style='font-size:22px; font-weight:900; color:#2563eb; margin-top:4px;'>" + top2.perfGlobal + "%</div>" +
-                             "</div>";
-            }
-
-            if (top1) {
-                htmlPodio += "<div class='podio-card-item' style='flex:1.1; background:#fffbeb; border:3.5px solid #f59e0b; border-radius:14px; padding:14px 10px; text-align:center; max-width:300px; transform:translateY(-4px); box-shadow:0 8px 20px rgba(245,158,11,0.2);'>" +
-                             "  <div style='font-size:36px;'>🥇 🏆</div>" +
-                             "  <div style='font-size:11px; font-weight:900; color:#b45309; text-transform:uppercase;'>1ER LUGAR</div>" +
-                             "  <div style='font-size:16px; font-weight:900; color:#78350f; margin:4px 0;'>" + top1.supervisor + "</div>" +
-                             "  <div style='font-size:11px; color:#d97706; font-weight:bold;'>Líneas: " + top1.lineas + "</div>" +
-                             "  <div style='font-size:28px; font-weight:900; color:#009B4A; margin-top:6px;'>" + top1.perfGlobal + "%</div>" +
-                             "</div>";
-            }
-
-            if (top3) {
-                htmlPodio += "<div class='podio-card-item' style='flex:1; background:#fff7ed; border:2.5px solid #d97706; border-radius:12px; padding:10px; text-align:center; max-width:270px;'>" +
-                             "  <div style='font-size:28px;'>🥉</div>" +
-                             "  <div style='font-size:11px; font-weight:900; color:#b45309; text-transform:uppercase;'>3ER LUGAR</div>" +
-                             "  <div style='font-size:14px; font-weight:900; color:#0f172a; margin:4px 0;'>" + top3.supervisor + "</div>" +
-                             "  <div style='font-size:11px; color:#d97706; font-weight:bold;'>Líneas: " + top3.lineas + "</div>" +
-                             "  <div style='font-size:22px; font-weight:900; color:#d97706; margin-top:4px;'>" + top3.perfGlobal + "%</div>" +
-                             "</div>";
-            }
-
-            htmlPodio += "</div>";
-            render += rankingSup.length > 0 ? htmlPodio : "<p style='text-align:center; color:#64748b; font-weight:bold;'>No hay datos de supervisores disponibles hoy.</p>";
-            render += "</div>";
+            // PODIO DE SUPERVISORES (rankingSupervisores del servidor)
+            render += wpRenderPodioSupervisoresHTML(rankingSup);
 
             render += "</div>";
             cont.innerHTML = render;
         })
         .withFailureHandler(function(err) {
-            cont.innerHTML = "<h3 style='color:red; text-align:center; padding-top:15vh;'>Error de conexión: " + err.message + "</h3>";
+            cont.innerHTML = "<h3 style='color:red; text-align:center; padding-top:15vh;'>⚠️ Error de conexión con el servidor: " + wpEscaparHTML(err && err.message ? err.message : String(err)) + "</h3>";
         })
         .obtenerResumenEjecutivoDirecto();
 }
+
+// Escapa texto antes de concatenarlo en HTML (evita que un nombre con < > " rompa la vista o inyecte código).
+function wpEscaparHTML(valor) {
+    return String(valor === undefined || valor === null ? "" : valor)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function wpRenderPodioSupervisoresHTML(lista) {
+    var datos = (Array.isArray(lista) ? lista : [])
+        .filter(function(s) { return s && String(s.supervisor || "").trim() !== ""; })
+        .map(function(s) {
+            var p = Number(s.perfGlobal);
+            return {
+                supervisor: String(s.supervisor).trim(),
+                lineas: Array.isArray(s.lineas) ? s.lineas.join(", ") : String(s.lineas || ""),
+                perf: isFinite(p) ? p : 0
+            };
+        })
+        .sort(function(a, b) { return b.perf - a.perf; });
+
+    var html = "<h3 style='color:#009B4A; font-size:15px; font-weight:900; text-transform:uppercase; margin:10px 0;'>🏆 PODIO DE SUPERVISORES (PERFORMANCE GLOBAL)</h3>";
+    if (datos.length === 0) {
+        return html + "<p style='text-align:center; color:#64748b; font-weight:bold; padding:15px;'>No hay supervisores con registros hoy.</p>";
+    }
+
+    var estilos = [
+        { medalla: "🥇", borde: "#f59e0b", fondo: "#fffbeb", color: "#b45309", extra: "transform:scale(1.06);" },
+        { medalla: "🥈", borde: "#94a3b8", fondo: "#f1f5f9", color: "#475569", extra: "" },
+        { medalla: "🥉", borde: "#d97706", fondo: "#fff7ed", color: "#9a3412", extra: "" }
+    ];
+
+    html += "<div class='podio-flex-container'>";
+    [1, 0, 2].forEach(function(pos) {           // orden visual 2º – 1º – 3º
+        var s = datos[pos];
+        if (!s) return;
+        var e = estilos[pos];
+        html += "<div class='podio-card-item' style='flex:1; max-width:300px; text-align:center; border:3px solid " + e.borde + "; background:" + e.fondo + "; border-radius:12px; padding:14px; " + e.extra + "'>" +
+                "<div style='font-size:34px;'>" + e.medalla + "</div>" +
+                "<div style='font-weight:900; font-size:15px; color:#0f172a;'>" + wpEscaparHTML(s.supervisor) + "</div>" +
+                "<div style='font-size:11px; color:#64748b; font-weight:bold; margin-top:4px;'>Líneas: " + wpEscaparHTML(s.lineas || "-") + "</div>" +
+                "<div style='font-size:28px; font-weight:900; color:" + e.color + "; margin-top:6px;'>" + s.perf + "%</div>" +
+                "</div>";
+    });
+    html += "</div>";
+
+    if (datos.length > 3) {
+        html += "<table style='width:100%; border-collapse:collapse; font-size:12px; margin-top:12px;'>" +
+                "<thead><tr style='background:#009B4A; color:white;'><th style='padding:6px;'>#</th><th style='text-align:left;'>SUPERVISOR</th><th style='text-align:left;'>LÍNEAS</th><th>PERFORMANCE</th></tr></thead><tbody>";
+        for (var i = 3; i < datos.length; i++) {
+            html += "<tr style='border-bottom:1px solid #e2e8f0;'><td style='padding:6px; text-align:center;'><b>" + (i + 1) + "</b></td>" +
+                    "<td>" + wpEscaparHTML(datos[i].supervisor) + "</td>" +
+                    "<td>" + wpEscaparHTML(datos[i].lineas || "-") + "</td>" +
+                    "<td style='text-align:center; font-weight:900;'>" + datos[i].perf + "%</td></tr>";
+        }
+        html += "</tbody></table>";
+    }
+    return html;
+}
+
 </script>
+
 <!-- Contenedor invisible para decodificación de imagen -->
 <div id="qr-reader-hidden" style="display:none;"></div>
-  <script src="script.js"></script>
+
+<!-- =========================================================================
+     GUARDAS PARA FUNCIONES QUE NO EXISTEN EN ESTE ARCHIVO
+     El Index recibido estaba recortado al final y estas funciones se perdieron.
+     Solo se definen si NO existen, así que no interfieren cuando restaures el
+     archivo completo. Evitan el "ReferenceError" silencioso al pulsar el botón.
+     ========================================================================= -->
+<script>
+(function () {
+  "use strict";
+
+  function aviso(nombre) {
+    return function () {
+      var msg = "La función '" + nombre + "' no está en este index.html (se perdió al recortarse el archivo). " +
+                "Recupera la versión completa de Index.html desde el editor de Apps Script.";
+      console.error("[WorkPulse] " + msg);
+      alert("⚠️ " + msg);
+    };
+  }
+
+  [
+    "abrirPermisosEHSNuevaPestana",
+    "alSeleccionarFolio",
+    "enviarCerrarMtto",
+    "programarMttoDesdeModal",
+    "abrirComparativaCotizaciones",
+    "procesarFotoRefaccionConBanner"
+  ].forEach(function (nombre) {
+    if (typeof window[nombre] !== "function") window[nombre] = aviso(nombre);
+  });
+
+  // Puente usado por la pestaña de Refacciones (window.opener.guardarCardServidorBridge).
+  // Reconstruido: envía los datos a actualizarAvanceRefaccionCard() del servidor,
+  // que es la única función de Code.gs que guarda el avance de una tarjeta de refacción.
+  if (typeof window.guardarCardServidorBridge !== "function") {
+    window.guardarCardServidorBridge = function (datos, callback) {
+      var cb = (typeof callback === "function") ? callback : function () {};
+      google.script.run
+        .withSuccessHandler(function (res) { cb(res); })
+        .withFailureHandler(function (err) { cb({ success: false, message: err && err.message ? err.message : String(err) }); })
+        .actualizarAvanceRefaccionCard(datos);
+    };
+  }
+})();
+</script>
 </body>
 </html>
