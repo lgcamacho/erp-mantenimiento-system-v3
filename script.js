@@ -24,13 +24,15 @@ function doGet() {
 function parseAnyDate(val) {
   if (!val) return null;
   let d = null;
-  let now = new Date();
 
-  // 1. Si ya viene como objeto Date desde Google Sheets
+  // 1. Si ya viene como objeto Date desde Google Sheets o JavaScript
   if (val instanceof Date) {
     if (isNaN(val.getTime())) return null;
     d = val;
   } else if (typeof val === 'number') {
+    // Si viene como número de serie de Excel/Google Sheets o milisegundos
+    // (Nota: Si es número de serie de Sheets puro, a veces requiere conversión, 
+    // pero si ya manejas timestamps de milisegundos, new Date(val) funciona perfecto)
     d = new Date(val);
   } else {
     let str = String(val).trim();
@@ -40,7 +42,7 @@ function parseAnyDate(val) {
     // Limpieza de comas y espacios
     str = str.replace(/,/g, " ").replace(/\s+/g, " ").trim();
 
-    // Detección de formato DD/MM/YYYY o MM/DD/YYYY
+    // Detección de formato DD/MM/YYYY o MM/DD/YYYY con / o -
     let match = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
     if (match) {
       let p1 = parseInt(match[1], 10);
@@ -51,17 +53,24 @@ function parseAnyDate(val) {
       let hh = timeMatch ? parseInt(timeMatch[1], 10) : 0;
       let mm = timeMatch ? parseInt(timeMatch[2], 10) : 0;
 
-      // Si p2 > 12, p1 es el mes y p2 es el día
+      // Si p2 > 12, forzosamente p1 es el mes y p2 es el día (MM/DD/YYYY)
       if (p2 > 12) {
         d = new Date(year, p1 - 1, p2, hh, mm);
       } else {
-        // Intenta asumir p1 = día, p2 = mes (Formato Mexicano/Español)
+        // Formato Mexicano/Español por defecto: p1 = día, p2 = mes (DD/MM/YYYY)
         d = new Date(year, p2 - 1, p1, hh, mm);
       }
     } else {
+      // Intento estándar de parseo para otros formatos de texto
       d = new Date(str);
     }
   }
+
+  // Validación final: si la fecha resultante es inválida, retornamos null
+  if (!d || isNaN(d.getTime())) return null;
+
+  return d;
+}
 
   if (!d || isNaN(d.getTime())) return null;
 
@@ -140,11 +149,43 @@ function crearBlobSeguro(base64Data, contentType, filename) {
 
 function enviarCorreoCorporativo(subject, titulo, mensajesHtml, folioRef, area, linea, maq, parte, folioMtto, urlAdjunto1, urlAdjunto2) {
   try {
-    let tablaInfo = folioRef !== "N/A" || parte !== "N/A" ? `<table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;"><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold; width: 35%;">Folio Refacción:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold; color:#009B4A;">${folioRef}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Folio Mantenimiento:</td><td style="padding: 10px; border: 1px solid #e2e8f0;">${folioMtto || "Pendiente"}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Máquina:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold;">${maq}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Parte Solicitada:</td><td style="padding: 10px; border: 1px solid #e2e8f0; color: #dc2626; font-weight: bold;">${parte}</td></tr></table>` : `<table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;"><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold; width: 35%;">Folio Mantenimiento:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold; color:#009B4A;">${folioMtto}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Máquina:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold;">${maq}</td></tr></table>`;
+    let tablaInfo = (folioRef !== "N/A" && folioRef) || (parte !== "N/A" && parte) ? 
+      `<table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;"><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold; width: 35%;">Folio Refacción:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold; color:#009B4A;">${folioRef}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Folio Mantenimiento:</td><td style="padding: 10px; border: 1px solid #e2e8f0;">${folioMtto || "Pendiente"}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Máquina:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold;">${maq}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Parte Solicitada:</td><td style="padding: 10px; border: 1px solid #e2e8f0; color: #dc2626; font-weight: bold;">${parte}</td></tr></table>` : 
+      `<table style="width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px;"><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold; width: 35%;">Folio Mantenimiento:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold; color:#009B4A;">${folioMtto}</td></tr><tr><td style="padding: 10px; border: 1px solid #e2e8f0; background: #f8fafc; font-weight: bold;">Máquina:</td><td style="padding: 10px; border: 1px solid #e2e8f0; font-weight:bold;">${maq}</td></tr></table>`;
+    
     let htmlBody = `<div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 30px; background-color: #f4f7f6; color: #333;"><div style="max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 15px rgba(0,0,0,0.05); border-top: 6px solid #009B4A;"><div style="padding: 25px; text-align: center; border-bottom: 1px solid #e2e8f0;"><img src="https://www.nidec.com/files/user/www-nidec-com/corporate/about/slogan/img/img_slogan_01.png" style="height: 50px;"></div><div style="padding: 30px;"><h2 style="color: #009B4A; margin-top: 0; text-align: center;">${titulo}</h2><div style="font-size: 15px; color: #475569;">${mensajesHtml}</div>${tablaInfo}</div></div></div>`;
-    let adjuntos = []; let urls = [urlAdjunto1, urlAdjunto2]; urls.forEach(url => { if (url && url.includes("drive.google.com")) { let match = url.match(/[-\w]{25,}/); if (match && match[0]) { try { let file = DriveApp.getFileById(match[0]); adjuntos.push(file.getBlob()); } catch(err) {} } } });
-    if (adjuntos.length > 0) { MailApp.sendEmail({ to: CORREO_COMPRAS, subject: subject, htmlBody: htmlBody, attachments: adjuntos }); } else { MailApp.sendEmail({ to: CORREO_COMPRAS, subject: subject, htmlBody: htmlBody }); }
-  } catch(e) {}
+    
+    let adjuntos = []; 
+    let urls = [urlAdjunto1, urlAdjunto2]; 
+    
+    urls.forEach(url => { 
+      if (url && typeof url === "string" && url.includes("drive.google.com")) { 
+        let match = url.match(/[-\w]{25,}/); 
+        if (match && match[0]) { 
+          try { 
+            let file = DriveApp.getFileById(match[0]); 
+            adjuntos.push(file.getBlob()); 
+          } catch(err) {
+            console.warn("No se pudo adjuntar el archivo de Drive para la URL: " + url);
+          } 
+        } 
+      } 
+    });
+    
+    if (typeof CORREO_COMPRAS === 'undefined') {
+      throw new Error("La variable CORREO_COMPRAS no está definida.");
+    }
+
+    if (adjuntos.length > 0) { 
+      MailApp.sendEmail({ to: CORREO_COMPRAS, subject: subject, htmlBody: htmlBody, attachments: adjuntos }); 
+    } else { 
+      MailApp.sendEmail({ to: CORREO_COMPRAS, subject: subject, htmlBody: htmlBody }); 
+    }
+    
+    console.log("Correo corporativo enviado exitosamente a: " + CORREO_COMPRAS);
+  } catch(e) {
+    console.error("Error al enviar el correo corporativo: ", e.message);
+  }
 }
 
 function consultarIA(preguntaUsuario) {
@@ -844,19 +885,38 @@ function solicitarPermisoTrabajoEHS(datos) { // 👈 NUEVA FUNCIÓN COMPLETA
     var ss = getDB(); // 👈 Adaptado a tu base de datos getDB()
     var sheet = ss.getSheetByName("Log_Permisos_EHS");
     
-    // Crear pestaña en Google Sheets si no existe
-    if (!sheet) {
-      sheet = ss.insertSheet("Log_Permisos_EHS");
-      sheet.appendRow([
-        "Folio Permiso", "Fecha Registro", "Actividad Alto Riesgo", 
-        "Técnico Ejecutor", "Supervisor", "Ubicación", "Tiempo Estimado", 
-        "Estatus", "URL Evidencias Previas", "Inspector Aprobación EHS", 
-        "Fecha Aprobación EHS", "URL Evidencia Aprobación EHS",
-        "Fecha Cierre Supervisor", "URL Evidencia Cierre", 
-        "Inspector Cierre EHS", "Fecha Cierre EHS", "URL Evidencia Cierre EHS"
-      ]);
-      sheet.getRange(1, 1, 1, 17).setFontWeight("bold").setBackground("#009B4A").setFontColor("#ffffff");
-    }
+// Variable ss asumida como SpreadsheetApp.getActiveSpreadsheet();
+let sheet = ss.getSheetByName("Log_Permisos_EHS");
+
+// Crear pestaña en Google Sheets si no existe
+if (!sheet) {
+  sheet = ss.insertSheet("Log_Permisos_EHS");
+  
+  // 1. Insertar la fila de encabezados
+  sheet.appendRow([
+    "Folio Permiso", "Fecha Registro", "Actividad Alto Riesgo", 
+    "Técnico Ejecutor", "Supervisor", "Ubicación", "Tiempo Estimado", 
+    "Estatus", "URL Evidencias Previas", "Inspector Aprobación EHS", 
+    "Fecha Aprobación EHS", "URL Evidencia Aprobación EHS",
+    "Fecha Cierre Supervisor", "URL Evidencia Cierre", 
+    "Inspector Cierre EHS", "Fecha Cierre EHS", "URL Evidencia Cierre EHS"
+  ]);
+  
+  // 2. Dar formato al encabezado (Negrita, Fondo Verde Nidec, Texto Blanco y Alineación Centrada)
+  let headerRange = sheet.getRange(1, 1, 1, 17);
+  headerRange
+    .setFontWeight("bold")
+    .setBackground("#009B4A")
+    .setFontColor("#ffffff")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle");
+    
+  // 3. Congelar la primera fila para facilitar el desplazamiento
+  sheet.setFrozenRows(1);
+  
+  // 4. Ajustar el ancho de las columnas automáticamente al contenido del encabezado
+  sheet.autoResizeColumns(1, 17);
+}
 
     var lastRow = sheet.getLastRow();
     var nextNum = lastRow > 1 ? lastRow : 1;
@@ -866,39 +926,45 @@ function solicitarPermisoTrabajoEHS(datos) { // 👈 NUEVA FUNCIÓN COMPLETA
     var timeZone = Session.getScriptTimeZone() || "GMT-6";
     var fechaStr = Utilities.formatDate(new Date(), timeZone, "dd/MM/yyyy, HH:mm:ss");
 
-    // Guardar evidencias en Google Drive
-    var folderName = "WorkPulse_Evidencias_Permisos_EHS";
-    var folders = DriveApp.getFoldersByName(folderName);
-    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+// Guardar evidencias en Google Drive
+var folderName = "WorkPulse_Evidencias_Permisos_EHS";
+var folders = DriveApp.getFoldersByName(folderName);
+var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
 
-    var urlsArr = [];
-    if (datos.fotos && datos.fotos.length > 0) {
-      for (var i = 0; i < datos.fotos.length; i++) {
-        var fotoObj = datos.fotos[i];
-        if (fotoObj && fotoObj.base64) {
-          var rawBase64 = String(fotoObj.base64)
-            .replace(/^data:image\/\w+;base64,/, "")
-            .replace(/^data:application\/pdf;base64,/, "")
-            .replace(/[\r\n\s]/g, "");
-            
-          var bytes = Utilities.base64Decode(rawBase64);
-          var blob = Utilities.newBlob(
-            bytes, 
-            fotoObj.tipo || "image/jpeg", 
-            folio + "_EvidenciaPrevia_" + (i + 1) + ".jpg"
-          );
-          
-          var file = folder.createFile(blob);
-          
-          try {
-            file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-          } catch (eSharing) {}
-          
-          urlsArr.push(file.getUrl());
-        }
+var urlsArr = [];
+if (datos.fotos && datos.fotos.length > 0) {
+  for (var i = 0; i < datos.fotos.length; i++) {
+    var fotoObj = datos.fotos[i];
+    if (fotoObj && fotoObj.base64) {
+      var rawBase64 = String(fotoObj.base64)
+        .replace(/^data:image\/\w+;base64,/, "")
+        .replace(/^data:application\/pdf;base64,/, "")
+        .replace(/[\r\n\s]/g, "");
+         
+      var bytes = Utilities.base64Decode(rawBase64);
+      
+      // Detectar extensión dinámica basada en el tipo (ej. pdf o jpg)
+      var mimeType = fotoObj.tipo || "image/jpeg";
+      var extension = mimeType.includes("pdf") ? "pdf" : "jpg";
+      
+      var blob = Utilities.newBlob(
+        bytes, 
+        mimeType, 
+        folio + "_EvidenciaPrevia_" + (i + 1) + "." + extension
+      );
+      
+      var file = folder.createFile(blob);
+      
+      try {
+        file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      } catch (eSharing) {
+        console.warn("No se pudo configurar el permiso público para el archivo: " + file.getName());
       }
+      
+      urlsArr.push(file.getUrl());
     }
-
+  }
+}
     // Registrar fila en Log_Permisos_EHS
     sheet.appendRow([
       folio,
@@ -2908,7 +2974,9 @@ function registrarFinAlarmaEHS(rowId) {
   }
 }
 /**
- * Convierte los audios de Google Drive a Base64 para reproducción en el navegador
+/**
+ * Convierte los audios de Google Drive mapeados a Base64 para reproducción en el navegador
+ * @return {Object} Objeto con las claves y sus respectivas cadenas Base64 listas para usar.
  */
 function obtenerAudiosBase64EHS() {
   var idsMap = {
@@ -2918,8 +2986,8 @@ function obtenerAudiosBase64EHS() {
     p05_notificar: "1ZP2W5_bmHqP4wHWNsDyy_u9fHJqzyZoo",      // Pasos 5
     p06_operador: "1nCC4Ok2zXQibeBuv8h5xfjIuJ4dWd_dl",       // Pasos 6
     p11_todolisto: "1yc2pESbTwF2Mk9WCorYHMq5KFbgcl8P3",      // Pasos 11
-    p13_rest1min: "14AAgir9tzx4Bd-kTtjmRkraHeFtnNnCO",       // Pasos 13, 14
-    p19_rest30s: "1_ydnAbPFmXK5Uc4ED3-vtYQiAgWmIGn4",        // Pasos 19
+    p13_rest1min: "14AAgir9tzx4Bd-kTtjmRkraHeFtnNnCO",        // Pasos 13, 14
+    p19_rest30s: "1_ydnAbPFmXK5Uc4ED3-vtYQiAgWmIGn4",         // Pasos 19
     p24_fintiempo: "1Y4kOmeEWxCz-Txw1y9W51lupYCv1j8Yf",      // Pasos 24
     p26_excedido_proto: "1IZrLoQ4PHIZrpQjtn2Q76qM_oS8P-YBP", // Pasos 26, 28, 30, 32, 35, 37, 39, 42, 44, 47, 51, 53, 55
     p33_excedido30: "1pQS52Y_y5yFKkYoynwcWXmUBQ_W0JSKi",     // Pasos 33
@@ -2927,8 +2995,32 @@ function obtenerAudiosBase64EHS() {
     p49_excedido90: "1CtHKMaSdCuEdngwktDTjCLWXjN63blUT",     // Pasos 49
     p56_excedido120: "1HxftvGMbFbd5r2fRCFS8KmXsn5KX5kdX",    // Pasos 56
     p57_desactiva4m: "1VHnlVjmMxffnd1VC25Bp-cImC6Fyo5zy",    // Pasos 57
-    p58_cancela: "1iduaIp5p8efmVvk788VGi6MTQ11qkM6f"         // Pasos 58 (Cancelación anticipada)
+    p58_cancela: "1iduaIp5p8efmVvk788VGi6MTQ11qkM6f"          // Pasos 58 (Cancelación anticipada)
   };
+
+  var audiosBase64 = {};
+
+  for (var key in idsMap) {
+    if (idsMap.hasOwnProperty(key)) {
+      var fileId = idsMap[key];
+      try {
+        var file = DriveApp.getFileById(fileId);
+        var blob = file.getBlob();
+        var bytes = blob.getBytes();
+        var base64Data = Utilities.base64Encode(bytes);
+        var mimeType = blob.getContentType() || "audio/mp3";
+        
+        // Estructura lista para asignarse directo al atributo src de un elemento de audio o JS
+        audiosBase64[key] = "data:" + mimeType + ";base64," + base64Data;
+      } catch (e) {
+        console.warn("No se pudo cargar el audio con ID: " + fileId + " (" + key + "). Error: " + e.message);
+        audiosBase64[key] = null;
+      }
+    }
+  }
+
+  return audiosBase64;
+}
 
   var base64Audios = {
     alarm: "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg"
